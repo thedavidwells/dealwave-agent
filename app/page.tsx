@@ -10,75 +10,125 @@
 import { useChat } from "@ai-sdk/react";
 
 export default function Home() {
-  // useChat manages the full conversation state.
-  // Internally it:
-  //    1. Holds the messages array in React state.
-  //    2. POSTs to /api/chat with { messages } whenever sendMessage() is called
-  //    3. Streams the response back to the client via SSE.
-  //    4. Parses the UI message stream events and appends them to messages
-  //    5. Re-renders this component on every update.
-  const { messages, sendMessage, status } = useChat();
+    // useChat manages the full conversation state.
+    // Internally it:
+    //    1. Holds the messages array in React state.
+    //    2. POSTs to /api/chat with { messages } whenever sendMessage() is called
+    //    3. Streams the response back to the client via SSE.
+    //    4. Parses the UI message stream events and appends them to messages
+    //    5. Re-renders this component on every update.
+    const { messages, sendMessage, status } = useChat();
 
-  // Local sate for the inpur box (useChat v5 doesn't manage input state itself).
-  const handleSubmit = (e: React.SubmitEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const input = (form.elements.namedItem("prompt") as HTMLInputElement).value;
+    // Local sate for the inpur box (useChat v5 doesn't manage input state itself).
+    const handleSubmit = (e: React.SubmitEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const input = (form.elements.namedItem("prompt") as HTMLInputElement)
+            .value;
 
-    if (!input.trim()) return;
+        if (!input.trim()) return;
 
-    // sendMessage triggers the POST to /api/chat with the new user message
-    // appended to the existing message history.
-    sendMessage({ text: input });
-    form.reset();
-  };
-  return (
-    <main
-      style={{
-        maxWidth: 720,
-        margin: "40px auto",
-        padding: 16,
-        fontFamily: "system-ui",
-      }}
-    >
-      <h1 style={{ fontSize: 24, marginBottom: 16 }}>DealWave Deal Analyst</h1>
+        // sendMessage triggers the POST to /api/chat with the new user message
+        // appended to the existing message history.
+        sendMessage({ text: input });
+        form.reset();
+    };
 
-      {/* Conversation history.
-          messages[].parts is an array of typed parts: { type: 'text', text }, etc.
-          For now we only render text parts. When we add tools tomorrow, we'll
-          add cases for tool-call, tool-result, and needs-approval part types. */}
-      <div style={{ marginBottom: 24 }}>
-        {messages.map((m) => (
-          <div key={m.id} style={{ margin: "12px 0" }}>
-            <strong>{m.role === "user" ? "You" : "Agent"}:</strong>{" "}
-            {m.parts?.map((part, i) =>
-              part.type === "text" ? <span key={i}>{part.text}</span> : null,
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Status indicator — shows when the model is thinking/streaming.
-          status: 'ready' | 'submitted' | 'streaming' | 'error' */}
-      {status === "streaming" && (
-        <div style={{ color: "#888" }}>Agent is thinking…</div>
-      )}
-
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8 }}>
-        <input
-          name="prompt"
-          placeholder="Ask about a deal…"
-          style={{ flex: 1, padding: 8, fontSize: 16 }}
-          disabled={status === "streaming" || status === "submitted"}
-        />
-        <button
-          type="submit"
-          disabled={status === "streaming" || status === "submitted"}
-          style={{ padding: "8px 16px" }}
+    return (
+        <main
+            style={{
+                maxWidth: 720,
+                margin: "40px auto",
+                padding: 16,
+                fontFamily: "system-ui",
+            }}
         >
-          Send
-        </button>
-      </form>
-    </main>
-  );
+            <h1 style={{ fontSize: 24, marginBottom: 16 }}>
+                DealWave Deal Analyst
+            </h1>
+
+            {/* Conversation history.
+                messages[].parts is an array of typed parts: { type: 'text', text }, etc.
+                For now we only render text parts. When we add tools tomorrow, we'll
+                add cases for tool-call, tool-result, and needs-approval part types. */}
+            <div style={{ marginBottom: 24 }}>
+                {messages.map((m) => (
+                    <div key={m.id} style={{ margin: "12px 0" }}>
+                        <strong>{m.role === "user" ? "You" : "Agent"}:</strong>{" "}
+                        {m.parts?.map((part, i) => {
+                            // Plain text from the model.
+                            if (part.type === "text") {
+                                return <span key={i}>{part.text}</span>;
+                            }
+
+                            // Tool call in progress — the model decided to call a tool.
+                            // The exact type name depends on the tool. v5 emits 'tool-<toolname>'
+                            // for each registered tool, with sub-states for input/output.
+                            if (part.type.startsWith("tool-")) {
+                                return (
+                                    <div
+                                        key={i}
+                                        style={{
+                                            margin: "8px 0",
+                                            padding: 8,
+                                            background: "#f5f5f5",
+                                            borderLeft: "3px solid #888",
+                                            fontFamily: "monospace",
+                                            fontSize: 13,
+                                        }}
+                                    >
+                                        <div style={{ fontWeight: "bold" }}>
+                                            🔧 {part.type}
+                                        </div>
+                                        <pre
+                                            style={{
+                                                margin: "4px 0 0",
+                                                whiteSpace: "pre-wrap",
+                                                overflow: "auto",
+                                            }}
+                                        >
+                                            {JSON.stringify(part, null, 2)}
+                                        </pre>
+                                    </div>
+                                );
+                            }
+
+                            // Debug fallback: any part type we haven't handled yet.
+                            // Useful right now — you'll SEE every part type in the stream.
+                            return (
+                                <pre
+                                    key={i}
+                                    style={{ fontSize: 11, color: "#888" }}
+                                >
+                                    {JSON.stringify(part, null, 2)}
+                                </pre>
+                            );
+                        })}
+                    </div>
+                ))}
+            </div>
+
+            {/* Status indicator — shows when the model is thinking/streaming.
+                status: 'ready' | 'submitted' | 'streaming' | 'error' */}
+            {status === "streaming" && (
+                <div style={{ color: "#888" }}>Agent is thinking…</div>
+            )}
+
+            <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8 }}>
+                <input
+                    name="prompt"
+                    placeholder="Ask about a deal…"
+                    style={{ flex: 1, padding: 8, fontSize: 16 }}
+                    disabled={status === "streaming" || status === "submitted"}
+                />
+                <button
+                    type="submit"
+                    disabled={status === "streaming" || status === "submitted"}
+                    style={{ padding: "8px 16px" }}
+                >
+                    Send
+                </button>
+            </form>
+        </main>
+    );
 }
