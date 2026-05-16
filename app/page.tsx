@@ -8,6 +8,42 @@
 // Without it, this is a server component and the hook will crash at build time.
 
 import { useChat } from "@ai-sdk/react";
+import { isToolUIPart, getToolName } from "ai";
+
+// AI Elements — Vercel's official component library for AI SDK apps.
+// Installed shadcn-style (components live in /components/ai-elements/),
+// so we OWN the code and can customize. Designed specifically to consume
+// useChat's typed message parts (text, tool-<name>, reasoning, etc.).
+import {
+    Conversation,
+    ConversationContent,
+    ConversationEmptyState,
+    ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
+import {
+    Message,
+    MessageContent,
+    MessageResponse,
+} from "@/components/ai-elements/message";
+import {
+    Tool,
+    ToolContent,
+    ToolHeader,
+    ToolInput,
+    ToolOutput,
+} from "@/components/ai-elements/tool";
+import {
+    PromptInput,
+    PromptInputBody,
+    PromptInputTextarea,
+    PromptInputFooter,
+    PromptInputSubmit,
+    PromptInputTools,
+    type PromptInputMessage,
+    type PromptInputProps,
+} from "@/components/ai-elements/prompt-input";
+import { Shimmer } from "@/components/ai-elements/shimmer";
+import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
 
 export default function Home() {
     // useChat manages the full conversation state.
@@ -19,116 +55,183 @@ export default function Home() {
     //    5. Re-renders this component on every update.
     const { messages, sendMessage, status } = useChat();
 
-    // Local sate for the inpur box (useChat v5 doesn't manage input state itself).
-    const handleSubmit = (e: React.SubmitEvent<HTMLFormElement>) => {
+    // PromptInput manages its own textarea state internally, so we no longer
+    // need a form ref or DOM query like we did with the raw <input>. It hands
+    // us the parsed message + the raw event on submit.
+    // PromptInputMessage = { text: string; files: FileUIPart[] }
+    const handleSubmit: PromptInputProps["onSubmit"] = (message, e) => {
         e.preventDefault();
-        const form = e.currentTarget;
-        const input = (form.elements.namedItem("prompt") as HTMLInputElement)
-            .value;
-
-        if (!input.trim()) return;
+        if (!message.text.trim()) return;
 
         // sendMessage triggers the POST to /api/chat with the new user message
         // appended to the existing message history.
-        sendMessage({ text: input });
-        form.reset();
+        sendMessage({ text: message.text });
     };
 
     return (
-        <main
-            style={{
-                maxWidth: 720,
-                margin: "40px auto",
-                padding: 16,
-                fontFamily: "system-ui",
-            }}
-        >
-            <h1 style={{ fontSize: 24, marginBottom: 16 }}>
-                DealWave Deal Analyst
-            </h1>
+        <div className="flex h-screen flex-col bg-background">
+            {/* Header — DealWave brand + one-line value prop.
+                Static shell; renders as part of the server component output
+                before useChat hydrates the client tree. */}
+            <header className="border-b px-6 py-4">
+                <div className="mx-auto max-w-3xl">
+                    <h1 className="text-xl font-semibold tracking-tight">
+                        DealWave Deal Analyst
+                    </h1>
+                    <p className="text-sm text-muted-foreground">
+                        Underwrite a property in seconds — AI Gateway + DealWave
+                    </p>
+                </div>
+            </header>
 
             {/* Conversation history.
                 messages[].parts is an array of typed parts: { type: 'text', text }, etc.
-                For now we only render text parts. When we add tools tomorrow, we'll
-                add cases for tool-call, tool-result, and needs-approval part types. */}
-            <div style={{ marginBottom: 24 }}>
-                {messages.map((m) => (
-                    <div key={m.id} style={{ margin: "12px 0" }}>
-                        <strong>{m.role === "user" ? "You" : "Agent"}:</strong>{" "}
-                        {m.parts?.map((part, i) => {
-                            // Plain text from the model.
-                            if (part.type === "text") {
-                                return <span key={i}>{part.text}</span>;
-                            }
+                The <Conversation> component handles scroll behavior, sticky-to-bottom
+                during stream, and shows a scroll-to-bottom button if the user scrolls up.
+                We render each part type with the appropriate AI Elements component. */}
+            <Conversation className="flex-1">
+                <ConversationContent className="mx-auto max-w-3xl">
+                    {messages.length === 0 && (
+                        <ConversationEmptyState
+                            title="Ready to analyze a deal"
+                            description="Paste a property address and I'll pull underwriting data, validate with comps, and give you a buy/pass recommendation."
+                        />
+                    )}
 
-                            // Tool call in progress — the model decided to call a tool.
-                            // The exact type name depends on the tool. v5 emits 'tool-<toolname>'
-                            // for each registered tool, with sub-states for input/output.
-                            if (part.type.startsWith("tool-")) {
-                                return (
-                                    <div
-                                        key={i}
-                                        style={{
-                                            margin: "8px 0",
-                                            padding: 8,
-                                            background: "#f5f5f5",
-                                            borderLeft: "3px solid #888",
-                                            fontFamily: "monospace",
-                                            fontSize: 13,
-                                        }}
-                                    >
-                                        <div style={{ fontWeight: "bold" }}>
-                                            🔧 {part.type}
-                                        </div>
-                                        <pre
-                                            style={{
-                                                margin: "4px 0 0",
-                                                whiteSpace: "pre-wrap",
-                                                overflow: "auto",
-                                            }}
-                                        >
-                                            {JSON.stringify(part, null, 2)}
-                                        </pre>
-                                    </div>
-                                );
-                            }
+                    {messages.map((m) => (
+                        <Message key={m.id} from={m.role}>
+                            <MessageContent>
+                                {m.parts?.map((part, i) => {
+                                    // Plain text from the model.
+                                    // <Response> is a streaming-aware markdown renderer:
+                                    // headers, lists, code fences, and inline formatting all
+                                    // render correctly even while tokens are still arriving
+                                    // (no broken layouts mid-stream).
+                                    if (part.type === "text") {
+                                        return (
+                                            <MessageResponse key={i}>
+                                                {part.text}
+                                            </MessageResponse>
+                                        );
+                                    }
 
-                            // Debug fallback: any part type we haven't handled yet.
-                            // Useful right now — you'll SEE every part type in the stream.
-                            return (
-                                <pre
-                                    key={i}
-                                    style={{ fontSize: 11, color: "#888" }}
-                                >
-                                    {JSON.stringify(part, null, 2)}
-                                </pre>
-                            );
-                        })}
-                    </div>
-                ))}
+                                    // Tool call in progress — the model decided to call a tool.
+                                    // The exact type name depends on the tool. v5 emits 'tool-<toolname>'
+                                    // for each registered tool, with sub-states for input/output:
+                                    //   'input-streaming' | 'input-available' | 'output-available' | 'output-error'
+                                    // The <Tool> family renders this as a collapsible card with
+                                    // a status indicator (spinner / check / error icon), the input
+                                    // JSON, and the output JSON. Auto-opens on error so the user
+                                    // sees what went wrong without clicking to expand.
+                                    if (isToolUIPart(part)) {
+                                        return (
+                                            <Tool
+                                                key={i}
+                                                defaultOpen={
+                                                    part.state ===
+                                                    "output-error"
+                                                }
+                                            >
+                                                {/* ToolHeader props are a discriminated union:
+                - static tools (type = `tool-${name}`) encode the name in the type
+                - dynamic tools (type = "dynamic-tool") require a separate toolName field.
+                We branch so TS narrows correctly. Our project only uses static tools
+                today, but handling both makes the code future-proof and satisfies the
+                type system without an unsafe `as` cast. */}
+                                                {part.type ===
+                                                "dynamic-tool" ? (
+                                                    <ToolHeader
+                                                        type={part.type}
+                                                        state={part.state}
+                                                        toolName={part.toolName}
+                                                    />
+                                                ) : (
+                                                    <ToolHeader
+                                                        type={part.type}
+                                                        state={part.state}
+                                                    />
+                                                )}
+
+                                                <ToolContent>
+                                                    <ToolInput
+                                                        input={part.input}
+                                                    />
+                                                    <ToolOutput
+                                                        output={part.output}
+                                                        errorText={
+                                                            part.state ===
+                                                            "output-error"
+                                                                ? part.errorText
+                                                                : undefined
+                                                        }
+                                                    />
+                                                </ToolContent>
+                                            </Tool>
+                                        );
+                                    }
+
+                                    // Any part type we haven't explicitly handled
+                                    // (reasoning, source, file, data-*, etc.) — skip silently.
+                                    // Add specific renderers here as we need them.
+                                    return null;
+                                })}
+                            </MessageContent>
+                        </Message>
+                    ))}
+
+                    {/* Status indicator — shows when the model is thinking/streaming.
+                        status: 'ready' | 'submitted' | 'streaming' | 'error'.
+                        We show <Loader/> only during 'submitted' — the gap between
+                        the user hitting Send and the first token arriving. Once tokens
+                        start flowing the loader unmounts and <Response> takes over. */}
+                    {status === "submitted" && (
+                        <div className="px-4 py-2">
+                            <Shimmer>Thinking…</Shimmer>
+                        </div>
+                    )}
+                </ConversationContent>
+
+                {/* Floating "scroll to bottom" button — appears only when the user
+                    has scrolled up from the bottom of the conversation. */}
+                <ConversationScrollButton />
+            </Conversation>
+
+            {/* Prompt input — pinned to bottom. PromptInput handles:
+                - Auto-resizing textarea (grows up to ~8 lines, sized to content)
+                - Submit on Enter, newline on Shift+Enter
+                - Accessibility (proper labels + keyboard nav)
+                - Status-aware submit button (spinner during stream) */}
+            <div className="border-t bg-background">
+                <div className="mx-auto w-full max-w-3xl px-4 py-3">
+                    <PromptInput onSubmit={handleSubmit}>
+                        <PromptInputTextarea
+                            // w-full forces the textarea to fill the InputGroup,
+                            // counteracting field-sizing-content which would otherwise
+                            // shrink to the empty content width on first render.
+                            className="w-full"
+                            placeholder="Try: Analyze 10165 W Burntwood Ct, Boise, ID"
+                            disabled={
+                                status === "streaming" || status === "submitted"
+                            }
+                        />
+                        {/* Footer holds action buttons on the left + submit on the right.
+                            Default classes (justify-between gap-1) handle the layout —
+                            no need to override. PromptInputTools is the canonical
+                            container for left-side action buttons; we leave it empty
+                            for now and add a model picker, attachment button etc. later. */}
+                        <PromptInputFooter>
+                            <PromptInputTools />
+                            <PromptInputSubmit
+                                status={status}
+                                disabled={
+                                    status === "streaming" ||
+                                    status === "submitted"
+                                }
+                            />
+                        </PromptInputFooter>
+                    </PromptInput>
+                </div>
             </div>
-
-            {/* Status indicator — shows when the model is thinking/streaming.
-                status: 'ready' | 'submitted' | 'streaming' | 'error' */}
-            {status === "streaming" && (
-                <div style={{ color: "#888" }}>Agent is thinking…</div>
-            )}
-
-            <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8 }}>
-                <input
-                    name="prompt"
-                    placeholder="Ask about a deal…"
-                    style={{ flex: 1, padding: 8, fontSize: 16 }}
-                    disabled={status === "streaming" || status === "submitted"}
-                />
-                <button
-                    type="submit"
-                    disabled={status === "streaming" || status === "submitted"}
-                    style={{ padding: "8px 16px" }}
-                >
-                    Send
-                </button>
-            </form>
-        </main>
+        </div>
     );
 }
