@@ -8,7 +8,12 @@
 // Without it, this is a server component and the hook will crash at build time.
 
 import { useChat } from "@ai-sdk/react";
-import { isToolUIPart, getToolName } from "ai";
+import {
+    isToolUIPart,
+    getToolName,
+    lastAssistantMessageIsCompleteWithToolCalls,
+    lastAssistantMessageIsCompleteWithApprovalResponses,
+} from "ai";
 
 // AI Elements — Vercel's official component library for AI SDK apps.
 // Installed shadcn-style (components live in /components/ai-elements/),
@@ -53,7 +58,17 @@ export default function Home() {
     //    3. Streams the response back to the client via SSE.
     //    4. Parses the UI message stream events and appends them to messages
     //    5. Re-renders this component on every update.
-    const { messages, sendMessage, status } = useChat();
+    const { messages, sendMessage, status, addToolApprovalResponse } = useChat({
+        // Fire the resume request when EITHER:
+        //   - all client-side tool calls have outputs (future: when we add tools
+        //     that run client-side and need to send results back), OR
+        //   - all pending approvals have been answered (our create_deal case).
+        // Approvals and outputs are tracked separately by the SDK, so we OR
+        // the two predicates to cover both paths.
+        sendAutomaticallyWhen: ({ messages }) =>
+            lastAssistantMessageIsCompleteWithToolCalls({ messages }) ||
+            lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
+    });
 
     // PromptInput manages its own textarea state internally, so we no longer
     // need a form ref or DOM query like we did with the raw <input>. It hands
@@ -166,6 +181,47 @@ export default function Home() {
                                                         }
                                                     />
                                                 </ToolContent>
+                                                {/* Approval gate — when a tool has needsApproval:true, the loop pauses
+                                                    at approval-requested state. The user must respond before execute fires.
+                                                    This is the human-in-the-loop demo moment. We replace this minimal
+                                                    button row with the polished Action Required block Sunday. */}
+                                                {part.state ===
+                                                    "approval-requested" && (
+                                                    <div className="flex gap-2 border-t border-border/50 p-3">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                addToolApprovalResponse(
+                                                                    {
+                                                                        id: part
+                                                                            .approval
+                                                                            .id, // ← was part.toolCallId
+                                                                        approved: true,
+                                                                    },
+                                                                )
+                                                            }
+                                                            className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground"
+                                                        >
+                                                            Save Deal
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                addToolApprovalResponse(
+                                                                    {
+                                                                        id: part
+                                                                            .approval
+                                                                            .id, // ← was part.toolCallId
+                                                                        approved: false,
+                                                                    },
+                                                                )
+                                                            }
+                                                            className="rounded-md border px-4 py-1.5 text-sm"
+                                                        >
+                                                            Skip
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </Tool>
                                         );
                                     }

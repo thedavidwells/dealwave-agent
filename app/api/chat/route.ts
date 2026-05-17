@@ -1,6 +1,8 @@
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { analyzeDealTool } from "@/lib/tools/analyze-deal";
 import { pullCompsTool } from "@/lib/tools/pull-comps";
+import { createDealTool } from "@/lib/tools/create-deal";
+import { create } from "domain";
 
 // Disable Next.js's default response caching for this route
 // AI responses are dynamic per-request - so we don't want to cache them
@@ -58,6 +60,22 @@ export async function POST(request: Request) {
             with severity >= 4 prominently. Never invent numbers — only use values
             returned by tools.
 
+            After completing analysis (analyze_deal and optionally pull_comps), if
+            the verdict is strong-deal or good-deal, OFFER to save the deal by calling
+            create_deal. The create_deal tool will pause the loop and ask the user
+            for explicit approval before persisting — never assume permission. When
+            calling create_deal, pass:
+            - address (same one analyzed)
+            - name (optional friendly label)
+            - notes (1-2 sentence summary of the deal: score, strategy, key numbers)
+            - investment_strategy (your recommended strategy)
+
+            If the user explicitly says "save it" or "save to pipeline" or similar,
+            call create_deal immediately.
+
+            If the user declines or says skip, acknowledge gracefully and offer to
+            help with the next analysis.
+
             Be concise. Lead with the recommendation (strong-deal / good-deal /
             investigate / pass), then the supporting numbers, then the caveats.
             If you ran both analyze_deal and pull_comps, briefly mention what the
@@ -69,6 +87,7 @@ export async function POST(request: Request) {
         tools: {
             analyze_deal: analyzeDealTool,
             pull_comps: pullCompsTool,
+            create_deal: createDealTool,
         },
 
         // Stop after 8 steps. This helps manage cost and prevents infinite loops if the model gets confused. Adjust as needed.
