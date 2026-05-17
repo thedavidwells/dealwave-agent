@@ -55,7 +55,7 @@ import {
 } from "@/components/dealwave/model-selector";
 import { DWLogo } from "@/components/dealwave/dw-logo";
 import EvalBadge from "@/components/dealwave/eval-badge";
-import DotGrid from "@/components/dealwave/dot-grid";
+import { IntelligentWaveField } from "@/components/dealwave/intelligent-wave-field";
 import GatewayBar from "@/components/dealwave/gateway-bar";
 import { ToolPillStrip } from "@/components/dealwave/tool-pill";
 import { ApprovalPrompt } from "@/components/dealwave/approval-prompt";
@@ -309,7 +309,15 @@ function EmptyState({
             className="relative flex flex-1 flex-col items-center justify-center"
             style={{ padding: "0 60px 100px", gap: 28 }}
         >
-            <DotGrid />
+            {/* Ambient wave field — vendored from the DealWave marketing
+                site. Wrapped at opacity-30 (per the handoff doc's "make
+                it subtle" §1) so the brand-color pulses read as quiet
+                chrome under the prompt rather than competing for
+                attention. The component is `pointer-events-none` so the
+                input below stays clickable through it. */}
+            <div className="pointer-events-none absolute inset-0 opacity-30">
+                <IntelligentWaveField />
+            </div>
 
             {/* Above the dot grid via z-index. The grid is z-0 with
                 pointer-events:none, so content sits cleanly on top. */}
