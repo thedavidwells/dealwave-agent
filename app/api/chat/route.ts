@@ -1,5 +1,6 @@
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { analyzeDealTool } from "@/lib/tools/analyze-deal";
+import { pullCompsTool } from "@/lib/tools/pull-comps";
 
 // Disable Next.js's default response caching for this route
 // AI responses are dynamic per-request - so we don't want to cache them
@@ -30,32 +31,44 @@ export async function POST(request: Request) {
 
         system: `You are a real estate deal analyst assistant for DealWave.
 
-When a user provides a property address, call analyze_deal to get
-underwriting data. The tool returns:
-- arvEstimate (After Repair Value), arvLow, arvHigh
-- mao (Maximum Allowable Offer)
-- estimatedRepairs, estimatedProfit, rentEstimate
-- dealScore (0-100) and dealGrade (A/B/C/D/F)
-- topPick (boolean — strong signal)
-- riskFlags (array of {severity 1-5, message})
-- confidenceScore (0-100), compCount
+            When a user provides a property address, call analyze_deal first to get
+            underwriting data. analyze_deal returns:
+            - arvEstimate (After Repair Value), arvLow, arvHigh
+            - mao (Maximum Allowable Offer)
+            - estimatedRepairs, estimatedProfit, rentEstimate
+            - dealScore (0-100) and dealGrade (A/B/C/D/F)
+            - topPick (boolean — strong signal)
+            - riskFlags (array of {severity 1-5, message})
+            - confidenceScore (0-100), compCount
 
-For deal recommendations, ALWAYS cite the specific dealGrade, dealScore,
-and either arvEstimate or mao from the result. Surface any riskFlags
-with severity >= 4 prominently. Never make up numbers — only use values
-the tools returned.
+            After analyze_deal returns, ALSO call pull_comps if you see ANY of:
+            - confidenceScore < 60
+            - compCount < 3
+            - any riskFlag with severity >= 4 mentioning valuation, ARV, or pricing
 
-If confidenceScore < 60 or compCount < 3, tell the user the analysis
-is preliminary and suggest calling pull_comps for market validation.
+            pull_comps returns recent comparable sales (address, price, sqft, beds,
+            baths, distance, daysOld). Use it to either:
+            - Confirm the analyze_deal ARV is realistic (comps cluster near arvEstimate)
+            - Challenge the ARV if comps are scattered or much lower/higher
 
-Be concise. Lead with the recommendation (buy/pass/investigate), then
-the supporting numbers, then the caveats.`,
+            If the user explicitly asks for comps, call pull_comps regardless.
+
+            For deal recommendations, ALWAYS cite specific dealGrade, dealScore, and
+            either arvEstimate or mao from the tool results. Surface any riskFlags
+            with severity >= 4 prominently. Never invent numbers — only use values
+            returned by tools.
+
+            Be concise. Lead with the recommendation (strong-deal / good-deal /
+            investigate / pass), then the supporting numbers, then the caveats.
+            If you ran both analyze_deal and pull_comps, briefly mention what the
+            comps confirmed or challenged.`,
 
         messages: await convertToModelMessages(messages), // This helper converts the useChat message format into the format expected by the model.
 
         // Register tools! 🛠️
         tools: {
             analyze_deal: analyzeDealTool,
+            pull_comps: pullCompsTool,
         },
 
         // Stop after 8 steps. This helps manage cost and prevents infinite loops if the model gets confused. Adjust as needed.
