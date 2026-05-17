@@ -67,7 +67,7 @@ export const analyzeDealTool = tool({
 
         // Success! Pass through the analysis data.
         // The model will read this and decide whether to call more tools
-        // (e.g. pull_comps for validation) or synthesize a response to the user.
+        // (e.g. pull_comps for validation) or compose a response to the user.
         return {
             ok: true,
             analysis: result.data,

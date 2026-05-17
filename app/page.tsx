@@ -49,10 +49,14 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
-// VerdictCard renders the typed Verdict object emitted by the Sonnet
-// synthesis step (custom data-verdict part on the message stream).
-// Composed of: banner, metric tile strip, risk warnings, follow-up chips.
+// VerdictCard renders the typed Verdict object emitted by the advisor
+// step (custom data-verdict part on the message stream). Composed of:
+// banner, metric tile strip, risk warnings, follow-up chips.
 import { VerdictCard, type Verdict } from "@/components/dealwave/verdict-card";
+import {
+    ModelSelectorBar,
+    useModelSelection,
+} from "@/components/dealwave/model-selector";
 
 export default function Home() {
     // useChat manages the full conversation state.
@@ -74,6 +78,14 @@ export default function Home() {
             lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
     });
 
+    // Model selection (research / advisor / backup). Persisted in
+    // localStorage so a page reload preserves the user's choice. The
+    // selection is forwarded with every send so the server route can
+    // override its hardcoded defaults on a per-request basis. Server
+    // re-validates against an allowlist — anything stale or tampered
+    // falls back to defaults silently.
+    const { models, update: updateModels } = useModelSelection();
+
     // PromptInput manages its own textarea state internally, so we no longer
     // need a form ref or DOM query like we did with the raw <input>. It hands
     // us the parsed message + the raw event on submit.
@@ -84,7 +96,7 @@ export default function Home() {
 
         // sendMessage triggers the POST to /api/chat with the new user message
         // appended to the existing message history.
-        sendMessage({ text: message.text });
+        sendMessage({ text: message.text }, { body: { models } });
     };
 
     return (
@@ -118,12 +130,13 @@ export default function Home() {
                     )}
 
                     {messages.map((m, mi) => {
-                        // Detect "synthesis pending" state for THIS message.
-                        // After Haiku finishes streaming text + tool results,
-                        // Sonnet runs the verdict synthesis (3-5s). During that
-                        // window the message has analysis tool results but no
-                        // data-verdict part yet. We show a Shimmer in that gap
-                        // so the wait feels intentional, not broken.
+                        // Detect "advisor pending" state for THIS message.
+                        // After the research model finishes streaming text +
+                        // tool results, the advisor model builds the verdict
+                        // (3-5s). During that window the message has analysis
+                        // tool results but no data-verdict part yet. We show
+                        // a Shimmer in that gap so the wait feels intentional,
+                        // not broken.
                         const isLast = mi === messages.length - 1;
                         const hasAnalysisResult =
                             m.parts?.some(
@@ -136,7 +149,7 @@ export default function Home() {
                         const hasVerdict =
                             m.parts?.some((p) => p.type === "data-verdict") ??
                             false;
-                        const showSynthesizing =
+                        const showAdvising =
                             isLast &&
                             m.role === "assistant" &&
                             status === "streaming" &&
@@ -260,7 +273,7 @@ export default function Home() {
                                         }
 
                                         // Custom data-verdict part — emitted by the
-                                        // Sonnet synthesis step after the tool loop
+                                        // advisor step after the research loop
                                         // completes. Renders as a verdict banner +
                                         // metric tile strip + risk warnings +
                                         // follow-up chips.
@@ -280,9 +293,10 @@ export default function Home() {
                                                     // new user turn — the chip becomes a
                                                     // real conversation message.
                                                     onFollowUp={(prompt) =>
-                                                        sendMessage({
-                                                            text: prompt,
-                                                        })
+                                                        sendMessage(
+                                                            { text: prompt },
+                                                            { body: { models } },
+                                                        )
                                                     }
                                                 />
                                             );
@@ -294,13 +308,15 @@ export default function Home() {
                                         return null;
                                     })}
 
-                                    {/* Synthesis-pending Shimmer — bridges the 3-5s
-                                        wait between Haiku finishing its text response
-                                        and Sonnet emitting the typed verdict. Without
-                                        this the input feels frozen; with it the wait
-                                        feels intentional. Disappears the moment the
-                                        verdict arrives and VerdictCard renders above. */}
-                                    {showSynthesizing && (
+                                    {/* Advisor-pending Shimmer — bridges the 3-5s
+                                        wait between the research model finishing
+                                        its text response and the advisor model
+                                        emitting the typed verdict. Without this
+                                        the input feels frozen; with it the wait
+                                        feels intentional. Disappears the moment
+                                        the verdict arrives and VerdictCard
+                                        renders above. */}
+                                    {showAdvising && (
                                         <div className="my-3">
                                             <Shimmer>
                                                 Generating detailed verdict…
@@ -363,6 +379,19 @@ export default function Home() {
                             />
                         </PromptInputFooter>
                     </PromptInput>
+
+                    {/* Model selector strip — sits below the input area
+                        so the dropdowns are out of the user's primary
+                        reading path but still discoverable. Each dropdown
+                        round-trips through localStorage (see
+                        useModelSelection), and the current selection ships
+                        with every sendMessage as request.body.models. */}
+                    <div className="mt-2 flex justify-center">
+                        <ModelSelectorBar
+                            models={models}
+                            onChange={updateModels}
+                        />
+                    </div>
                 </div>
             </div>
         </div>

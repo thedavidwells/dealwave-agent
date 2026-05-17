@@ -19,42 +19,135 @@ import { VerdictSchema } from "@/lib/schemas/verdict";
 
 export const dynamic = "force-dynamic";
 
-// Allow up to 60s for the full agent loop + synthesis.
+// Allow up to 60s for the full research loop + advisor step.
 // (Default Next.js function timeout on Hobby/Pro is 10s - we need more because
 // analyse_deal alone can take 15-30s seconds on first time properties, and the
-// Opus synthesis step adds another ~2-5s after the tool loop completes.)
+// advisor step adds another ~2-5s after the research loop completes.)
 export const maxDuration = 60;
+
+// Allowlist of models the client is permitted to pick. Server-side
+// validation is the source of truth — anything the client sends that
+// isn't here gets silently replaced with the corresponding default.
+// Defense against a stale localStorage value, a tampered request, or
+// a UI build that lags the server's idea of what's available.
+//
+// Naming mirrors the UI dropdowns:
+//   research → tool-loop model (pulls property data, runs comps)
+//   advisor  → verdict model (interprets data, picks strategy)
+//   backup   → optional gateway provider used only when primary is down
+const ALLOWED_RESEARCH = [
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-sonnet-4-6",
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+] as const;
+const ALLOWED_ADVISOR = [
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-haiku-4-5",
+    "openai/gpt-4o",
+] as const;
+const ALLOWED_BACKUP = ["none", "bedrock", "vertex"] as const;
+
+const DEFAULT_RESEARCH: (typeof ALLOWED_RESEARCH)[number] =
+    "anthropic/claude-haiku-4-5";
+const DEFAULT_ADVISOR: (typeof ALLOWED_ADVISOR)[number] =
+    "anthropic/claude-sonnet-4-6";
+const DEFAULT_BACKUP: (typeof ALLOWED_BACKUP)[number] = "none";
+
+function pickAllowed<T extends readonly string[]>(
+    candidate: unknown,
+    allowed: T,
+    defaultValue: T[number],
+    label: string,
+): T[number] {
+    if (typeof candidate === "string" && (allowed as readonly string[]).includes(candidate)) {
+        return candidate as T[number];
+    }
+    if (candidate !== undefined) {
+        // Log once per unknown value so a stale UI release shows up in
+        // the function logs without breaking the request.
+        console.warn(`[models] rejecting ${label}='${candidate}', using default '${defaultValue}'`);
+    }
+    return defaultValue;
+}
+
+// Build providerOptions.gateway for a given model + backup choice.
+// The Vercel AI Gateway exposes `order` as a list of provider IDs to
+// try in sequence — useful when we want resilience to a primary
+// provider blip. We prepend the model's native provider (anthropic /
+// openai) and append the user-selected backup. `none` returns undef
+// so the gateway uses its default routing.
+function gatewayOptions(model: string, backup: string) {
+    if (backup === "none") return undefined;
+    const primary = model.split("/")[0];
+    return {
+        gateway: {
+            order: [primary, backup],
+        },
+    };
+}
 
 export async function POST(request: Request) {
     // The useChat hook posts a JSON body witht he entire chat history.
     // We destructure 'messages' - which is an array of { role, content/parts } objects.
-    const { messages } = await request.json();
+    // `models` is sent by the client's model selector (see app/page.tsx and
+    // components/dealwave/model-selector.tsx) and is optional — absent on
+    // older clients or programmatic callers.
+    const { messages, models: clientModels } = await request.json();
+
+    const researchModel = pickAllowed(
+        clientModels?.research,
+        ALLOWED_RESEARCH,
+        DEFAULT_RESEARCH,
+        "research",
+    );
+    const advisorModel = pickAllowed(
+        clientModels?.advisor,
+        ALLOWED_ADVISOR,
+        DEFAULT_ADVISOR,
+        "advisor",
+    );
+    const backupProvider = pickAllowed(
+        clientModels?.backup,
+        ALLOWED_BACKUP,
+        DEFAULT_BACKUP,
+        "backup",
+    );
 
     // Convert UI messages → model messages once, up front.
-    // Both the Haiku tool loop AND the Opus synthesis step need this,
+    // Both the research tool loop AND the advisor step need this,
     // so we hoist the conversion out of streamText() for reuse.
     // This helper converts the useChat message format into the format expected by the model.
     const modelMessages = await convertToModelMessages(messages);
 
     // We compose a UI message stream so we can run TWO model calls and
     // merge both into the same client-facing response:
-    //   1. Haiku — orchestration / tool loop (cheap, fast)
-    //   2. Opus — structured verdict synthesis (expensive, high-quality)
+    //   1. Research — tool loop, pulls property data + runs comps (cheap, fast)
+    //   2. Advisor  — structured verdict, interprets data + picks strategy
     //
     // This is the AI Gateway model-tiering story made visible: N cheap
-    // calls for planning + 1 expensive call for the final answer. Both
-    // show up in the Gateway dashboard with separate attribution.
+    // calls for the research step + 1 expensive call for the advisor's
+    // final answer. Both show up in the Gateway dashboard with separate
+    // attribution.
     const stream = createUIMessageStream({
         execute: async ({ writer }) => {
             // ────────────────────────────────────────────────────────────
-            // STEP 1: Haiku tool loop
+            // STEP 1: Research tool loop
             // ────────────────────────────────────────────────────────────
 
             // We stream the response synchronously from the AI Gateway.
             const toolLoop = streamText({
                 // Model ID is just a plain string
                 // AI gateway will resolve it to the actual model endpoint. 🙌🏻
-                model: "anthropic/claude-haiku-4-5",
+                // Defaults to claude-haiku-4-5 but the client's Research
+                // dropdown (see components/dealwave/model-selector.tsx) can
+                // swap this on a per-request basis.
+                model: researchModel,
+                providerOptions: gatewayOptions(
+                    researchModel,
+                    backupProvider,
+                ),
 
                 // System prompt sets the agent's identity and rules.
                 // We'll add tools here later...
@@ -137,22 +230,23 @@ export async function POST(request: Request) {
                 // Stop after 8 steps. This helps manage cost and prevents infinite loops if the model gets confused. Adjust as needed.
                 stopWhen: stepCountIs(8),
 
-                // Per-step telemetry. Logs which model handled each step and
-                // how many tokens it consumed. Sunday this feeds the AI Gateway
-                // routing chip in the footer (model + latency + cost per step).
+                // Per-step telemetry. Logs which research model handled
+                // each step and how many tokens it consumed — useful for
+                // an AI Gateway routing chip in the footer (model +
+                // latency + cost per step).
                 onStepFinish: ({ finishReason, usage }) => {
                     console.log("[step]", {
-                        model: "claude-haiku-4-5",
+                        model: researchModel,
                         finishReason,
                         usage,
                     });
                 },
             });
 
-            // Merge the Haiku stream into our composite stream.
+            // Merge the research stream into our composite stream.
             // Tool calls + text from the loop appear on the client in real time.
             // sendFinish: false because we're going to write more chunks
-            // (the Opus verdict) before this composite stream is done.
+            // (the advisor's verdict) before this composite stream is done.
             writer.merge(
                 toolLoop.toUIMessageStream({
                     sendStart: true,
@@ -160,28 +254,30 @@ export async function POST(request: Request) {
                 }),
             );
 
-            // Wait for the Haiku loop to finish — we need its tool results
-            // in the conversation history for Opus to synthesize from.
+            // Wait for the research loop to finish — we need its tool
+            // results in the conversation history for the advisor to
+            // build a verdict from.
             const finalResponse = await toolLoop.response;
 
             // ────────────────────────────────────────────────────────────
-            // STEP 2: Opus structured verdict synthesis
+            // STEP 2: Advisor verdict (structured output)
             // ────────────────────────────────────────────────────────────
             //
-            // Opus reads the full tool loop + results and emits a typed
-            // Verdict. We attach it as a custom data-verdict part so the UI
-            // can render the verdict banner + metric tiles + follow-up chips
-            // (Sunday's UI work).
+            // The advisor reads the full research loop + results and emits
+            // a typed Verdict. We attach it as a custom data-verdict part
+            // so the UI can render the verdict banner + metric tiles +
+            // follow-up chips.
             //
-            // Skip synthesis when no tools were called (e.g. user asked a
-            // general question with no address) — Opus is expensive and
-            // synthesis isn't meaningful without tool results.
+            // Skip the advisor step when no tools were called (e.g. user
+            // asked a general question with no address) — the advisor
+            // model is expensive and a verdict isn't meaningful without
+            // tool results.
 
-            // Decide whether to synthesize on THIS turn.
+            // Decide whether to run the advisor on THIS turn.
             //
-            // Rule: synthesize only when the turn produced new analysis
-            // (analyze_deal or pull_comps results) AND did NOT involve
-            // create_deal. Skipping create_deal turns means:
+            // Rule: produce a verdict only when the turn yielded new
+            // analysis (analyze_deal or pull_comps results) AND did NOT
+            // involve create_deal. Skipping create_deal turns means:
             //   - During the approval pause: no new verdict needed
             //   - After the save succeeds: it's just a confirmation, not new analysis
             //
@@ -191,10 +287,11 @@ export async function POST(request: Request) {
             //      message ("does not support assistant message prefill") —
             //      the streamed loop ends with an assistant text response.
             //   2. If create_deal is paused at approval, the history has a
-            //      dangling tool-call with no result, which Opus also rejects.
+            //      dangling tool-call with no result, which the advisor
+            //      model also rejects.
             //
             // Feeding tool results via `prompt` (a single user turn) sidesteps
-            // both issues and gives Opus a focused input.
+            // both issues and gives the advisor a focused input.
             const analysisResults: { tool: string; output: unknown }[] = [];
             let touchedCreateDeal = false;
 
@@ -221,21 +318,26 @@ export async function POST(request: Request) {
                 }
             }
 
-            const shouldSynthesize =
+            const shouldAdvise =
                 analysisResults.length > 0 && !touchedCreateDeal;
 
-            if (shouldSynthesize) {
+            if (shouldAdvise) {
                 try {
                     const { object: verdict } = await generateObject({
-                        // Sonnet for the final synthesis: same structured-output
-                        // quality as Opus on this kind of task (validated tool
-                        // results → fixed schema), but roughly 2-3x faster and
-                        // 1/5th the cost. Appears as a separate row in the
-                        // AI Gateway dashboard so per-step cost and latency are
+                        // Sonnet default for the advisor step: same
+                        // structured-output quality as Opus on this kind
+                        // of task (validated tool results → fixed schema),
+                        // but roughly 2-3x faster and 1/5th the cost.
+                        // Appears as a separate row in the AI Gateway
+                        // dashboard so per-step cost and latency are
                         // observable per model tier.
-                        model: "anthropic/claude-sonnet-4-6",
+                        model: advisorModel,
+                        providerOptions: gatewayOptions(
+                            advisorModel,
+                            backupProvider,
+                        ),
                         schema: VerdictSchema,
-                        system: `You synthesize a real-estate deal analysis into a
+                        system: `You produce a real-estate deal analysis as a
                             structured verdict for a single-family investor.
 
                             Use ONLY values from the tool results provided. Never invent figures.
@@ -262,7 +364,7 @@ export async function POST(request: Request) {
                         // Single user turn with the tool results as JSON.
                         // Conversation ends with user → Anthropic accepts;
                         // no dangling tool calls → no MissingToolResults error.
-                        prompt: `Synthesize a structured Verdict from these tool results:
+                        prompt: `Produce a structured Verdict from these tool results:
 
 ${JSON.stringify(analysisResults, null, 2)}`,
                     });
@@ -275,15 +377,16 @@ ${JSON.stringify(analysisResults, null, 2)}`,
                         data: verdict,
                     });
 
-                    console.log("[synthesis]", {
-                        model: "claude-sonnet-4-6",
+                    console.log("[advisor]", {
+                        model: advisorModel,
                         recommendation: verdict.recommendation,
                         strategy: verdict.recommendedStrategy,
                     });
-                } catch (synthErr) {
-                    // Synthesis failure shouldn't break the chat — the
-                    // streamed text from Haiku stands alone as a fallback.
-                    console.error("[synthesis-failed]", synthErr);
+                } catch (advisorErr) {
+                    // Advisor failure shouldn't break the chat — the
+                    // streamed text from the research step stands alone
+                    // as a graceful degradation.
+                    console.error("[advisor-failed]", advisorErr);
                 }
             }
 

@@ -9,7 +9,7 @@
 // For each test case:
 //   1. Runs the Haiku tool loop (same config as app/api/chat/route.ts)
 //   2. Captures which tools the agent autonomously decided to call
-//   3. Runs Sonnet synthesis if analysis tools fired
+//   3. Runs the advisor step if analysis tools fired
 //   4. Asserts on: tools-called, recommendation, dealScore range,
 //      narrative content markers, optional no-verdict cases
 //   5. Reports pass/fail + latency + token usage per case
@@ -53,7 +53,7 @@ For deal recommendations, cite specific dealGrade, dealScore, and
 either arvEstimate or mao from the tool results. Never invent numbers.
 Be concise. Lead with the recommendation, then numbers, then caveats.`;
 
-const SYNTHESIS_PROMPT = `You synthesize a real-estate deal analysis into
+const ADVISOR_PROMPT = `You produce a real-estate deal analysis as
 a structured verdict for a single-family investor.
 
 Use ONLY values from the tool results provided. Never invent figures.
@@ -137,7 +137,7 @@ async function runCase(testCase: TestCase): Promise<CaseResult> {
     }
     const finalResponse = await loop.response;
 
-    // ── Extract analysis tool results for Sonnet synthesis ───────
+    // ── Extract analysis tool results for advisor step ───────────
     const analysisResults: { tool: string; output: unknown }[] = [];
     for (const m of finalResponse.messages) {
         if (!Array.isArray(m.content)) continue;
@@ -159,28 +159,28 @@ async function runCase(testCase: TestCase): Promise<CaseResult> {
         }
     }
 
-    // ── Sonnet synthesis (skip if no analysis tools fired) ───────
+    // ── Advisor step (skip if no analysis tools fired) ───────────
     let verdict: import("zod").infer<typeof VerdictSchema> | null = null;
     if (analysisResults.length > 0) {
         try {
             const { object, usage } = await generateObject({
                 model: "anthropic/claude-sonnet-4-6",
                 schema: VerdictSchema,
-                system: SYNTHESIS_PROMPT,
-                prompt: `Synthesize a structured Verdict from these tool results:
+                system: ADVISOR_PROMPT,
+                prompt: `Produce a structured Verdict from these tool results:
 
 ${JSON.stringify(analysisResults, null, 2)}`,
             });
             verdict = object;
             totalTokens += usage.totalTokens ?? 0;
         } catch (err) {
-            // Synthesis can fail (Zod rejection, network) — record but
+            // Advisor step can fail (Zod rejection, network) — record but
             // don't crash. Drill into the error chain to surface the
             // specific Zod issue(s) so we can debug schema violations.
             const e = err as Error & {
                 cause?: Error & { cause?: { issues?: unknown[] } };
             };
-            console.error(`  synth error: ${e.message}`);
+            console.error(`  advisor error: ${e.message}`);
             // AI_NoObjectGeneratedError wraps a TypeValidationError which
             // wraps a ZodError. We want the actual Zod issues array.
             const zodIssues = e.cause?.cause?.issues;
@@ -269,7 +269,7 @@ ${JSON.stringify(analysisResults, null, 2)}`,
         assertions.push({
             name: "verdict-emitted",
             pass: false,
-            detail: "expected a verdict but synthesis returned null",
+            detail: "expected a verdict but the advisor step returned null",
         });
     }
 

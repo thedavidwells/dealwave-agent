@@ -1,6 +1,6 @@
 // lib/schemas/verdict.ts
 //
-// The agent's final synthesis is a typed verdict, not free-form text.
+// The advisor's final output is a typed verdict, not free-form text.
 // This drives the UI's verdict banner + metric tiles + follow-up chips
 // without parsing model prose. Also serves as the eval target —
 // our eval script asserts on these fields per known property.

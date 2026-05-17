@@ -1,5 +1,5 @@
 {
-  "_doc": "Regression test set for the DealWave agent. Each case asserts the agent's autonomous tool-selection behavior and the synthesized verdict's shape and value ranges. Run with `pnpm eval`. Production extension: wire to CI to fail builds on regression.",
+  "_doc": "Regression test set for the DealWave agent. Each case asserts the agent's autonomous tool-selection behavior and the advisor verdict's shape and value ranges. Run with `pnpm eval`. Production extension: wire to CI to fail builds on regression.",
   "cases": [
     {
       "id": "burntwood-low-confidence",

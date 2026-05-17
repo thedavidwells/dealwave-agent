@@ -93,8 +93,8 @@ export const pullCompsTool = tool({
         }
 
         // Success - pass through the comp data.
-        // The model will surgace comp prices in it's synthesis to either
-        // confirm or challenge the analyze_deal ARV
+        // The advisor will surface comp prices in the verdict to either
+        // confirm or challenge the analyze_deal ARV.
         return {
             ok: true,
             comps: result.data,
