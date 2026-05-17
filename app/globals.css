@@ -4,12 +4,35 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ── Design-handoff tokens ──────────────────────────────────────────
+ *
+ * These are the raw values referenced throughout the app's chrome —
+ * banner colors, tile health states, JSON syntax highlighting, etc.
+ * Exposed as CSS variables so we can reference them as
+ * `var(--dw-green)` (or `bg-[var(--dw-green)]` in Tailwind) instead of
+ * hard-coding `#22c55e` in fifteen places. Values mirror the
+ * design-handoff README exactly — keep them in sync.
+ *
+ * Note: shadcn's token mapping below uses these same values where
+ * appropriate. We don't try to make shadcn's `--card` etc. "look
+ * dark" via opaque oklch lightness math — we directly set them to
+ * the design palette so the chrome reads identically to the
+ * prototype.
+ * ─────────────────────────────────────────────────────────────────── */
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  /* Bind Tailwind's font tokens to the Next.js next/font Geist variables
+   * defined on <html> by app/layout.tsx. Previous code had
+   * `--font-sans: var(--font-sans)` which was a self-reference — Tailwind
+   * generated `font-family: var(--font-sans)` but nothing set that
+   * variable on :root, so the browser fell back to serif. Pointing at
+   * --font-geist-sans (and -mono) closes the chain and adds a system
+   * fallback so the page reads cleanly even before the woff2 loads. */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -46,75 +69,102 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Animation keyframes registered with the Tailwind v4 theme so we
+   * can reference them via `animate-shimmer` etc. directly in JSX.
+   * Each keyframe matches the design-handoff's described motion. */
+  --animate-shimmer: shimmer 1.8s linear infinite;
+  --animate-text-pulse: textPulse 1.8s ease-in-out infinite;
+  --animate-fade-up: fadeSlideUp 0.25s ease-out both;
+  --animate-chip-pop: chipPop 0.22s ease-out both;
+  --animate-grid-wave: gridWave 3s ease-in-out infinite;
+
+  @keyframes shimmer {
+    0%   { background-position: -700px 0; }
+    100% { background-position: 700px 0; }
+  }
+  @keyframes textPulse {
+    0%, 100% { opacity: 0.4; }
+    50%      { opacity: 1; }
+  }
+  @keyframes fadeSlideUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes chipPop {
+    0%   { opacity: 0; transform: scale(0.9) translateY(4px); }
+    60%  { opacity: 1; transform: scale(1.05) translateY(-1px); }
+    100% { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  @keyframes gridWave {
+    0%   { transform: translateY(0) scale(1); opacity: 0.2; }
+    50%  { transform: translateY(-4px) scale(1.15); opacity: 0.5; }
+    100% { transform: translateY(0) scale(1); opacity: 0.2; }
+  }
 }
 
+/* :root holds the dark palette as the DEFAULT. We deliberately do
+ * not maintain a light variant — the design handoff is dark-first,
+ * and dual-theming would require revisiting every component's color
+ * choices. If a light theme is ever needed, restore a `.light` block
+ * with appropriate values and toggle by class. */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  /* Design-handoff raw tokens (referenced directly where the shadcn
+   * mapping isn't expressive enough — e.g. specific tints inside
+   * status pills, JSON syntax highlighting). */
+  --dw-bg:         #0a0a0a;
+  --dw-surface-1:  #111111;
+  --dw-surface-2:  #161616;
+  --dw-surface-3:  #1c1c1c;
+  --dw-border:     rgba(255, 255, 255, 0.08);
+  --dw-border-md:  rgba(255, 255, 255, 0.13);
+  --dw-border-str: rgba(255, 255, 255, 0.2);
+  --dw-text:       #fafafa;
+  --dw-sub:        rgba(255, 255, 255, 0.55);
+  --dw-dim:        rgba(255, 255, 255, 0.28);
+  --dw-muted:      rgba(255, 255, 255, 0.14);
+  --dw-green:      #22c55e;
+  --dw-red:        #ef4444;
+  --dw-blue:       #60a5fa;
+  --dw-amber:      #f59e0b;
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* shadcn token mapping. We bind the palette to the design tokens
+   * so existing shadcn primitives (Card, Badge, Button, etc.) inherit
+   * the dark surface treatment without a per-component rewrite.
+   * --primary is white-ish so the DW square logo and Save Deal button
+   * read as design-handoff `#fafafa`. */
+  --background:               #0a0a0a;
+  --foreground:               #fafafa;
+  --card:                     #111111;
+  --card-foreground:          #fafafa;
+  --popover:                  #161616;
+  --popover-foreground:       #fafafa;
+  --primary:                  #fafafa;
+  --primary-foreground:       #0a0a0a;
+  --secondary:                #161616;
+  --secondary-foreground:     #fafafa;
+  --muted:                    #161616;
+  --muted-foreground:         rgba(255, 255, 255, 0.55);
+  --accent:                   #1c1c1c;
+  --accent-foreground:        #fafafa;
+  --destructive:              #ef4444;
+  --border:                   rgba(255, 255, 255, 0.08);
+  --input:                    rgba(255, 255, 255, 0.13);
+  --ring:                     rgba(255, 255, 255, 0.2);
+  --chart-1:                  #60a5fa;
+  --chart-2:                  #22c55e;
+  --chart-3:                  #f59e0b;
+  --chart-4:                  #ef4444;
+  --chart-5:                  rgba(255, 255, 255, 0.55);
+  --radius: 0.5rem;
+  --sidebar:                  #111111;
+  --sidebar-foreground:       #fafafa;
+  --sidebar-primary:          #60a5fa;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent:           #1c1c1c;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border:           rgba(255, 255, 255, 0.08);
+  --sidebar-ring:             rgba(255, 255, 255, 0.2);
 }
 
 @layer base {
@@ -122,9 +172,31 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    /* Set the canvas color directly via the raw token so any rogue
+     * shadcn component that hasn't bound to --background still reads
+     * a coherent dark surface. */
+    background-color: var(--dw-bg);
+    color: var(--dw-text);
+    /* Belt-and-suspenders font-family on body — Tailwind's font-sans
+     * utility is also applied on <html> below, but some descendants
+     * (raw <h1>, <button>, native form controls) reset font-family to
+     * their user-agent default and need the cascade to start from a
+     * non-serif baseline. */
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   }
   html {
     @apply font-sans;
   }
+  /* Native heading + control elements get their UA font-family stripped
+   * so they inherit from body. Without this, <h1>/<button>/<input> render
+   * in Times/Helvetica respectively regardless of body settings. */
+  h1, h2, h3, h4, h5, h6, button, input, textarea, select {
+    font-family: inherit;
+  }
+
+  /* Custom scrollbar to match the design's slim, low-contrast track.
+   * Webkit only — Firefox uses its own thin-scrollbar preference. */
+  ::-webkit-scrollbar       { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
 }

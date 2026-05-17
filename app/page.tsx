@@ -1,12 +1,20 @@
 "use client";
-// The 'use client' directive tells Next.js that this page is a client component.
-// Client components are components that are rendered on the client side.
-// This means that the component will be rendered on the client side and not on the server side.
-// This is useful for components that need to interact with the browser API.
 
-// The 'use client is requred because useChat manages state, usees fetch streaming, and renders interactively.
-// Without it, this is a server component and the hook will crash at build time.
+// app/page.tsx — DealWave Agent chat surface.
+//
+// Top-level structure:
+//   - Header (DW logo + wordmark + AI Gateway pill + EvalBadge + New analysis)
+//   - Body:
+//       · Empty state (hero + animated dot grid + suggestion chips + gateway bar)
+//       · OR Chat conversation (messages with tool pill strips, verdict cards,
+//         approval prompts, and shimmer placeholders)
+//   - Footer prompt input + model selector strip
+//
+// 'use client' is required because useChat manages state, uses fetch
+// streaming, and renders interactively. Without it, this is a server
+// component and the hook would crash at build time.
 
+import { useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
     isToolUIPart,
@@ -14,15 +22,15 @@ import {
     lastAssistantMessageIsCompleteWithToolCalls,
     lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
+import { PlusIcon } from "lucide-react";
 
-// AI Elements — Vercel's official component library for AI SDK apps.
-// Installed shadcn-style (components live in /components/ai-elements/),
-// so we OWN the code and can customize. Designed specifically to consume
-// useChat's typed message parts (text, tool-<name>, reasoning, etc.).
+// AI Elements — we keep PromptInput (handles the textarea/submit ergonomics
+// nicely) and Conversation (sticky-to-bottom scroll behavior). The Tool family
+// is replaced by our own ToolPillStrip; the Shimmer + Suggestion components
+// are replaced by design-handoff equivalents.
 import {
     Conversation,
     ConversationContent,
-    ConversationEmptyState,
     ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import {
@@ -31,52 +39,57 @@ import {
     MessageResponse,
 } from "@/components/ai-elements/message";
 import {
-    Tool,
-    ToolContent,
-    ToolHeader,
-    ToolInput,
-    ToolOutput,
-} from "@/components/ai-elements/tool";
-import {
     PromptInput,
-    PromptInputBody,
     PromptInputTextarea,
     PromptInputFooter,
     PromptInputSubmit,
     PromptInputTools,
-    type PromptInputMessage,
     type PromptInputProps,
 } from "@/components/ai-elements/prompt-input";
-import { Shimmer } from "@/components/ai-elements/shimmer";
-import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
-// VerdictCard renders the typed Verdict object emitted by the advisor
-// step (custom data-verdict part on the message stream). Composed of:
-// banner, metric tile strip, risk warnings, follow-up chips.
+
+// DealWave-owned chrome — built to match the design handoff.
 import { VerdictCard, type Verdict } from "@/components/dealwave/verdict-card";
 import {
     ModelSelectorBar,
     useModelSelection,
 } from "@/components/dealwave/model-selector";
+import { DWLogo } from "@/components/dealwave/dw-logo";
+import EvalBadge from "@/components/dealwave/eval-badge";
+import DotGrid from "@/components/dealwave/dot-grid";
+import GatewayBar from "@/components/dealwave/gateway-bar";
+import { ToolPillStrip } from "@/components/dealwave/tool-pill";
+import { ApprovalPrompt } from "@/components/dealwave/approval-prompt";
+import { ShimmerBlock } from "@/components/dealwave/shimmer-block";
+
+// Suggestion chips shown in the empty state. SFR-investor friendly —
+// intentionally not the commercial multi-family examples from the design
+// handoff (DealWave is single-family residential).
+const SUGGESTIONS = [
+    "Analyze 1532 W Chateau Ave, Meridian, ID",
+    "Show me my recent deals",
+    "What metrics matter most for a fix-and-flip?",
+];
 
 export default function Home() {
-    // useChat manages the full conversation state.
-    // Internally it:
-    //    1. Holds the messages array in React state.
-    //    2. POSTs to /api/chat with { messages } whenever sendMessage() is called
-    //    3. Streams the response back to the client via SSE.
-    //    4. Parses the UI message stream events and appends them to messages
-    //    5. Re-renders this component on every update.
-    const { messages, sendMessage, status, addToolApprovalResponse } = useChat({
-        // Fire the resume request when EITHER:
-        //   - all client-side tool calls have outputs (future: when we add tools
-        //     that run client-side and need to send results back), OR
-        //   - all pending approvals have been answered (our create_deal case).
-        // Approvals and outputs are tracked separately by the SDK, so we OR
-        // the two predicates to cover both paths.
-        sendAutomaticallyWhen: ({ messages }) =>
-            lastAssistantMessageIsCompleteWithToolCalls({ messages }) ||
-            lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
-    });
+    // useChat manages the full conversation state and SSE stream lifecycle.
+    // setMessages is exposed so the "+ New analysis" header button can reset
+    // the conversation in-place without a full page reload.
+    const { messages, sendMessage, setMessages, status, addToolApprovalResponse } =
+        useChat({
+            // Fire the resume request when EITHER:
+            //   - all client-side tool calls have outputs (future-proofing
+            //     for client-side tools we may add), OR
+            //   - all pending approvals have been answered (our create_deal
+            //     case — needsApproval pauses the loop until the user clicks
+            //     Save or Skip in ApprovalPrompt).
+            // Approvals and outputs are tracked separately by the SDK, so we
+            // OR the two predicates to cover both resume paths.
+            sendAutomaticallyWhen: ({ messages }) =>
+                lastAssistantMessageIsCompleteWithToolCalls({ messages }) ||
+                lastAssistantMessageIsCompleteWithApprovalResponses({
+                    messages,
+                }),
+        });
 
     // Model selection (research / advisor / backup). Persisted in
     // localStorage so a page reload preserves the user's choice. The
@@ -86,314 +99,590 @@ export default function Home() {
     // falls back to defaults silently.
     const { models, update: updateModels } = useModelSelection();
 
-    // PromptInput manages its own textarea state internally, so we no longer
-    // need a form ref or DOM query like we did with the raw <input>. It hands
-    // us the parsed message + the raw event on submit.
+    // One expanded ToolPill at a time across the whole conversation.
+    // Keyed by toolCallId so the highlight survives re-renders and so a
+    // user can compare two tool calls by toggling between them. null =
+    // nothing expanded.
+    const [expandedToolCallId, setExpandedToolCallId] = useState<string | null>(
+        null,
+    );
+
+    // PromptInput hands us a parsed message + the raw event on submit.
     // PromptInputMessage = { text: string; files: FileUIPart[] }
     const handleSubmit: PromptInputProps["onSubmit"] = (message, e) => {
         e.preventDefault();
         if (!message.text.trim()) return;
-
-        // sendMessage triggers the POST to /api/chat with the new user message
-        // appended to the existing message history.
         sendMessage({ text: message.text }, { body: { models } });
     };
 
+    const isEmpty = messages.length === 0;
+
     return (
-        <div className="flex h-screen flex-col bg-background">
-            {/* Header — DealWave brand + one-line value prop.
-                Static shell; renders as part of the server component output
-                before useChat hydrates the client tree. */}
-            <header className="border-b px-6 py-4">
-                <div className="mx-auto max-w-3xl">
-                    <h1 className="text-xl font-semibold tracking-tight">
-                        DealWave Deal Analyst
-                    </h1>
-                    <p className="text-sm text-muted-foreground">
-                        Underwrite a property in seconds — AI Gateway + DealWave
-                    </p>
+        <div
+            className="flex h-screen flex-col"
+            style={{ background: "var(--dw-bg)" }}
+        >
+            {/* ── Header ─────────────────────────────────────────────────
+                11px 24px padding, 1px bottom border per the design spec.
+                Left: DW logo + wordmark. Right: AI Gateway pill + EvalBadge
+                + New analysis button. Z-index 10 so it sits above the
+                animated dot grid in the empty state. */}
+            <header
+                className="relative z-10 flex items-center justify-between"
+                style={{
+                    padding: "11px 24px",
+                    borderBottom: "1px solid var(--dw-border)",
+                }}
+            >
+                <div className="flex items-center" style={{ gap: 12 }}>
+                    <DWLogo />
+                    <span
+                        style={{
+                            fontSize: 15,
+                            fontWeight: 500,
+                            color: "rgba(255,255,255,0.82)",
+                        }}
+                    >
+                        DealWave Agent
+                    </span>
+                </div>
+
+                <div className="flex items-center" style={{ gap: 8 }}>
+                    {/* AI Gateway pill — static label, surfaces the routing
+                        story at a glance. Real model swap happens via the
+                        ModelSelectorBar below the input. */}
+                    <span
+                        style={{
+                            padding: "4px 10px",
+                            background: "var(--dw-surface-1)",
+                            border: "1px solid var(--dw-border)",
+                            borderRadius: 4,
+                            fontSize: 12,
+                            color: "var(--dw-sub)",
+                        }}
+                    >
+                        AI Gateway
+                    </span>
+
+                    <EvalBadge />
+
+                    {/* "+ New analysis" — visible only mid-conversation.
+                        Wipes the in-memory message list via setMessages so
+                        the empty state returns. We don't need to reset the
+                        model selection (localStorage-persisted intentionally)
+                        or the workflow state (durable on the server). */}
+                    {!isEmpty && (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setMessages([]);
+                                setExpandedToolCallId(null);
+                            }}
+                            className="flex items-center transition-colors"
+                            style={{
+                                gap: 5,
+                                padding: "5px 11px",
+                                background: "transparent",
+                                border: "1px solid var(--dw-border)",
+                                borderRadius: 4,
+                                fontSize: 13,
+                                color: "var(--dw-sub)",
+                            }}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.borderColor =
+                                    "var(--dw-border-md)";
+                                e.currentTarget.style.color = "var(--dw-text)";
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor =
+                                    "var(--dw-border)";
+                                e.currentTarget.style.color = "var(--dw-sub)";
+                            }}
+                        >
+                            <PlusIcon className="size-3.5" />
+                            New analysis
+                        </button>
+                    )}
                 </div>
             </header>
 
-            {/* Conversation history.
-                messages[].parts is an array of typed parts: { type: 'text', text }, etc.
-                The <Conversation> component handles scroll behavior, sticky-to-bottom
-                during stream, and shows a scroll-to-bottom button if the user scrolls up.
-                We render each part type with the appropriate AI Elements component. */}
-            <Conversation className="flex-1">
-                <ConversationContent className="mx-auto max-w-3xl">
-                    {messages.length === 0 && (
-                        <ConversationEmptyState
-                            title="Ready to analyze a deal"
-                            description="Paste a property address and I'll pull underwriting data, validate with comps, and give you a buy/pass recommendation."
-                        />
-                    )}
+            {/* ── Body ─────────────────────────────────────────────────── */}
+            {isEmpty ? (
+                <EmptyState
+                    onSubmit={(text) =>
+                        sendMessage({ text }, { body: { models } })
+                    }
+                    researchModel={models.research}
+                    advisorModel={models.advisor}
+                />
+            ) : (
+                <ChatStream
+                    messages={messages}
+                    status={status}
+                    expandedToolCallId={expandedToolCallId}
+                    setExpandedToolCallId={setExpandedToolCallId}
+                    addToolApprovalResponse={addToolApprovalResponse}
+                    onFollowUp={(prompt) =>
+                        sendMessage({ text: prompt }, { body: { models } })
+                    }
+                />
+            )}
 
-                    {messages.map((m, mi) => {
-                        // Detect "advisor pending" state for THIS message.
-                        // After the research model finishes streaming text +
-                        // tool results, the advisor model builds the verdict
-                        // (3-5s). During that window the message has analysis
-                        // tool results but no data-verdict part yet. We show
-                        // a Shimmer in that gap so the wait feels intentional,
-                        // not broken.
-                        const isLast = mi === messages.length - 1;
-                        const hasAnalysisResult =
-                            m.parts?.some(
-                                (p) =>
-                                    isToolUIPart(p) &&
-                                    p.state === "output-available" &&
-                                    (getToolName(p) === "analyze_deal" ||
-                                        getToolName(p) === "pull_comps"),
-                            ) ?? false;
-                        const hasVerdict =
-                            m.parts?.some((p) => p.type === "data-verdict") ??
-                            false;
-                        const showAdvising =
-                            isLast &&
-                            m.role === "assistant" &&
-                            status === "streaming" &&
-                            hasAnalysisResult &&
-                            !hasVerdict;
-
-                        return (
-                            <Message key={m.id} from={m.role}>
-                                <MessageContent>
-                                    {m.parts?.map((part, i) => {
-                                        // Plain text from the model.
-                                        // <Response> is a streaming-aware markdown renderer:
-                                        // headers, lists, code fences, and inline formatting all
-                                        // render correctly even while tokens are still arriving
-                                        // (no broken layouts mid-stream).
-                                        if (part.type === "text") {
-                                            return (
-                                                <MessageResponse key={i}>
-                                                    {part.text}
-                                                </MessageResponse>
-                                            );
-                                        }
-
-                                        // Tool call in progress — the model decided to call a tool.
-                                        // The exact type name depends on the tool. v5 emits 'tool-<toolname>'
-                                        // for each registered tool, with sub-states for input/output:
-                                        //   'input-streaming' | 'input-available' | 'output-available' | 'output-error'
-                                        // The <Tool> family renders this as a collapsible card with
-                                        // a status indicator (spinner / check / error icon), the input
-                                        // JSON, and the output JSON. Auto-opens on error so the user
-                                        // sees what went wrong without clicking to expand.
-                                        if (isToolUIPart(part)) {
-                                            return (
-                                                <Tool
-                                                    key={i}
-                                                    defaultOpen={
-                                                        part.state ===
-                                                        "output-error"
-                                                    }
-                                                >
-                                                    {/* ToolHeader props are a discriminated union:
-                - static tools (type = `tool-${name}`) encode the name in the type
-                - dynamic tools (type = "dynamic-tool") require a separate toolName field.
-                We branch so TS narrows correctly. Our project only uses static tools
-                today, but handling both makes the code future-proof and satisfies the
-                type system without an unsafe `as` cast. */}
-                                                    {part.type ===
-                                                    "dynamic-tool" ? (
-                                                        <ToolHeader
-                                                            type={part.type}
-                                                            state={part.state}
-                                                            toolName={
-                                                                part.toolName
-                                                            }
-                                                        />
-                                                    ) : (
-                                                        <ToolHeader
-                                                            type={part.type}
-                                                            state={part.state}
-                                                        />
-                                                    )}
-
-                                                    <ToolContent>
-                                                        <ToolInput
-                                                            input={part.input}
-                                                        />
-                                                        <ToolOutput
-                                                            output={part.output}
-                                                            errorText={
-                                                                part.state ===
-                                                                "output-error"
-                                                                    ? part.errorText
-                                                                    : undefined
-                                                            }
-                                                        />
-                                                    </ToolContent>
-                                                    {/* Approval gate — when a tool has needsApproval:true, the loop pauses
-                                                    at approval-requested state. The user must respond before execute fires.
-                                                    This is the human-in-the-loop pattern: explicit user consent before any
-                                                    consequential write. The minimal button row here can be replaced with a
-                                                    designed Action Required block later. */}
-                                                    {part.state ===
-                                                        "approval-requested" && (
-                                                        <div className="flex gap-2 border-t border-border/50 p-3">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    addToolApprovalResponse(
-                                                                        {
-                                                                            id: part
-                                                                                .approval
-                                                                                .id, // ← was part.toolCallId
-                                                                            approved: true,
-                                                                        },
-                                                                    )
-                                                                }
-                                                                className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground"
-                                                            >
-                                                                Save Deal
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    addToolApprovalResponse(
-                                                                        {
-                                                                            id: part
-                                                                                .approval
-                                                                                .id, // ← was part.toolCallId
-                                                                            approved: false,
-                                                                        },
-                                                                    )
-                                                                }
-                                                                className="rounded-md border px-4 py-1.5 text-sm"
-                                                            >
-                                                                Skip
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                </Tool>
-                                            );
-                                        }
-
-                                        // Custom data-verdict part — emitted by the
-                                        // advisor step after the research loop
-                                        // completes. Renders as a verdict banner +
-                                        // metric tile strip + risk warnings +
-                                        // follow-up chips.
-                                        if (part.type === "data-verdict") {
-                                            // `data` is typed `unknown` at the UIMessage
-                                            // union level; we trust the server's
-                                            // generateObject to have validated against
-                                            // VerdictSchema before emitting.
-                                            const verdict = (
-                                                part as { data: Verdict }
-                                            ).data;
-                                            return (
-                                                <VerdictCard
-                                                    key={i}
-                                                    verdict={verdict}
-                                                    // Clicking a follow-up chip fires a
-                                                    // new user turn — the chip becomes a
-                                                    // real conversation message.
-                                                    onFollowUp={(prompt) =>
-                                                        sendMessage(
-                                                            { text: prompt },
-                                                            { body: { models } },
-                                                        )
-                                                    }
-                                                />
-                                            );
-                                        }
-
-                                        // Any part type we haven't explicitly handled
-                                        // (reasoning, source, file, data-*, etc.) — skip silently.
-                                        // Add specific renderers here as we need them.
-                                        return null;
-                                    })}
-
-                                    {/* Advisor-pending Shimmer — bridges the 3-5s
-                                        wait between the research model finishing
-                                        its text response and the advisor model
-                                        emitting the typed verdict. Without this
-                                        the input feels frozen; with it the wait
-                                        feels intentional. Disappears the moment
-                                        the verdict arrives and VerdictCard
-                                        renders above. */}
-                                    {showAdvising && (
-                                        <div className="my-3">
-                                            <Shimmer>
-                                                Generating detailed verdict…
-                                            </Shimmer>
-                                        </div>
-                                    )}
-                                </MessageContent>
-                            </Message>
-                        );
-                    })}
-
-                    {/* Status indicator — shows when the model is thinking/streaming.
-                        status: 'ready' | 'submitted' | 'streaming' | 'error'.
-                        We show <Loader/> only during 'submitted' — the gap between
-                        the user hitting Send and the first token arriving. Once tokens
-                        start flowing the loader unmounts and <Response> takes over. */}
-                    {status === "submitted" && (
-                        <div className="px-4 py-2">
-                            <Shimmer>Thinking…</Shimmer>
-                        </div>
-                    )}
-                </ConversationContent>
-
-                {/* Floating "scroll to bottom" button — appears only when the user
-                    has scrolled up from the bottom of the conversation. */}
-                <ConversationScrollButton />
-            </Conversation>
-
-            {/* Prompt input — pinned to bottom. PromptInput handles:
-                - Auto-resizing textarea (grows up to ~8 lines, sized to content)
-                - Submit on Enter, newline on Shift+Enter
-                - Accessibility (proper labels + keyboard nav)
-                - Status-aware submit button (spinner during stream) */}
-            <div className="border-t bg-background">
-                <div className="mx-auto w-full max-w-3xl px-4 py-3">
-                    <PromptInput onSubmit={handleSubmit}>
-                        <PromptInputTextarea
-                            // w-full forces the textarea to fill the InputGroup,
-                            // counteracting field-sizing-content which would otherwise
-                            // shrink to the empty content width on first render.
-                            className="w-full"
-                            placeholder="Try: Analyze 10165 W Burntwood Ct, Boise, ID"
-                            disabled={
-                                status === "streaming" || status === "submitted"
-                            }
-                        />
-                        {/* Footer holds action buttons on the left + submit on the right.
-                            Default classes (justify-between gap-1) handle the layout —
-                            no need to override. PromptInputTools is the canonical
-                            container for left-side action buttons; we leave it empty
-                            for now and add a model picker, attachment button etc. later. */}
-                        <PromptInputFooter>
-                            <PromptInputTools />
-                            <PromptInputSubmit
-                                status={status}
+            {/* ── Prompt input + model selector strip ───────────────────
+                Hidden in the empty state — the EmptyState renders its own
+                input mock that delegates to the same sendMessage. Once a
+                conversation is underway this real PromptInput takes over. */}
+            {!isEmpty && (
+                <div
+                    className="relative z-10"
+                    style={{
+                        borderTop: "1px solid var(--dw-border)",
+                        background: "var(--dw-bg)",
+                    }}
+                >
+                    <div
+                        className="mx-auto w-full"
+                        style={{ maxWidth: 720, padding: "12px 16px" }}
+                    >
+                        <PromptInput onSubmit={handleSubmit}>
+                            <PromptInputTextarea
+                                className="w-full"
+                                placeholder="Ask about any deal or property…"
                                 disabled={
                                     status === "streaming" ||
                                     status === "submitted"
                                 }
                             />
-                        </PromptInputFooter>
-                    </PromptInput>
+                            <PromptInputFooter>
+                                <PromptInputTools />
+                                <PromptInputSubmit
+                                    status={status}
+                                    disabled={
+                                        status === "streaming" ||
+                                        status === "submitted"
+                                    }
+                                />
+                            </PromptInputFooter>
+                        </PromptInput>
 
-                    {/* Model selector strip — sits below the input area
-                        so the dropdowns are out of the user's primary
-                        reading path but still discoverable. Each dropdown
-                        round-trips through localStorage (see
-                        useModelSelection), and the current selection ships
-                        with every sendMessage as request.body.models. */}
-                    <div className="mt-2 flex justify-center">
-                        <ModelSelectorBar
-                            models={models}
-                            onChange={updateModels}
-                        />
+                        {/* Interactive model selector — small pills below the
+                            input. Persists across the empty/chat transition
+                            via localStorage in useModelSelection. */}
+                        <div className="mt-2 flex justify-center">
+                            <ModelSelectorBar
+                                models={models}
+                                onChange={updateModels}
+                            />
+                        </div>
                     </div>
                 </div>
+            )}
+        </div>
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// EmptyState — first-screen hero with dot grid + input mock + chips.
+// Separated so the chat-active path doesn't pay the cost of mounting
+// the dot-grid pseudo-element animations.
+// ────────────────────────────────────────────────────────────────────
+
+function EmptyState({
+    onSubmit,
+    researchModel,
+    advisorModel,
+}: {
+    onSubmit: (text: string) => void;
+    researchModel: string;
+    advisorModel: string;
+}) {
+    const [text, setText] = useState("");
+
+    const submit = (value: string) => {
+        const v = value.trim();
+        if (!v) return;
+        onSubmit(v);
+    };
+
+    return (
+        <div
+            className="relative flex flex-1 flex-col items-center justify-center"
+            style={{ padding: "0 60px 100px", gap: 28 }}
+        >
+            <DotGrid />
+
+            {/* Above the dot grid via z-index. The grid is z-0 with
+                pointer-events:none, so content sits cleanly on top. */}
+            <div
+                className="relative z-10 flex flex-col items-center"
+                style={{ gap: 28, width: "100%" }}
+            >
+                <div
+                    className="flex flex-col items-center text-center"
+                    style={{ gap: 8 }}
+                >
+                    <h1
+                        style={{
+                            fontSize: 32,
+                            fontWeight: 600,
+                            lineHeight: 1.2,
+                            letterSpacing: "-0.03em",
+                            color: "var(--dw-text)",
+                        }}
+                    >
+                        What deal are you analyzing today?
+                    </h1>
+                    <p style={{ fontSize: 13, color: "var(--dw-dim)" }}>
+                        DealWave API &nbsp;·&nbsp; AI SDK &nbsp;·&nbsp; Vercel
+                        AI Gateway
+                    </p>
+                </div>
+
+                {/* Input mock — uses a real <form> so Enter submits naturally.
+                    Maxes at 560px per the design spec. The Send button mirrors
+                    the design's white-pill treatment. */}
+                <form
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        submit(text);
+                    }}
+                    style={{ width: "100%", maxWidth: 560 }}
+                >
+                    <div
+                        className="flex items-center"
+                        style={{
+                            padding: "13px 16px",
+                            background: "var(--dw-surface-1)",
+                            border: "1px solid var(--dw-border-str)",
+                            borderRadius: 8,
+                            gap: 10,
+                            marginBottom: 14,
+                        }}
+                    >
+                        <input
+                            type="text"
+                            value={text}
+                            onChange={(e) => setText(e.target.value)}
+                            placeholder="Ask about any deal or property…"
+                            style={{
+                                flex: 1,
+                                background: "transparent",
+                                border: "none",
+                                outline: "none",
+                                fontSize: 14,
+                                color: "var(--dw-text)",
+                            }}
+                        />
+                        <button
+                            type="submit"
+                            style={{
+                                padding: "6px 14px",
+                                background: "rgba(255,255,255,0.9)",
+                                borderRadius: 5,
+                                fontSize: 13,
+                                fontWeight: 500,
+                                color: "#000",
+                                border: "none",
+                                cursor: "pointer",
+                            }}
+                        >
+                            Send
+                        </button>
+                    </div>
+
+                    <div
+                        className="flex flex-col"
+                        style={{ gap: 6, width: "100%" }}
+                    >
+                        <span
+                            style={{
+                                fontSize: 11,
+                                color: "var(--dw-dim)",
+                                marginBottom: 2,
+                            }}
+                        >
+                            Try:
+                        </span>
+                        {SUGGESTIONS.map((s) => (
+                            <button
+                                key={s}
+                                type="button"
+                                onClick={() => submit(s)}
+                                className="block w-full text-left transition-colors"
+                                style={{
+                                    padding: "11px 15px",
+                                    background: "var(--dw-surface-1)",
+                                    border: "1px solid var(--dw-border)",
+                                    borderRadius: 7,
+                                    fontSize: 14,
+                                    color: "var(--dw-sub)",
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.borderColor =
+                                        "var(--dw-border-md)";
+                                    e.currentTarget.style.background =
+                                        "var(--dw-surface-2)";
+                                    e.currentTarget.style.color =
+                                        "var(--dw-text)";
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.borderColor =
+                                        "var(--dw-border)";
+                                    e.currentTarget.style.background =
+                                        "var(--dw-surface-1)";
+                                    e.currentTarget.style.color =
+                                        "var(--dw-sub)";
+                                }}
+                            >
+                                {s}
+                            </button>
+                        ))}
+                    </div>
+                </form>
+
+                <GatewayBar
+                    researchModel={researchModel}
+                    advisorModel={advisorModel}
+                    evalPassing={3}
+                    evalTotal={3}
+                    toolCount={4}
+                />
             </div>
         </div>
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// ChatStream — renders the message list with ToolPillStrip, VerdictCard,
+// ApprovalPrompt, and ShimmerBlock placeholders.
+// ────────────────────────────────────────────────────────────────────
+
+type ChatMessage = ReturnType<typeof useChat>["messages"][number];
+type ToolPart = Extract<
+    ChatMessage["parts"][number],
+    { type: `tool-${string}` } | { type: "dynamic-tool" }
+>;
+
+function ChatStream({
+    messages,
+    status,
+    expandedToolCallId,
+    setExpandedToolCallId,
+    addToolApprovalResponse,
+    onFollowUp,
+}: {
+    messages: ChatMessage[];
+    status: ReturnType<typeof useChat>["status"];
+    expandedToolCallId: string | null;
+    setExpandedToolCallId: (id: string | null) => void;
+    addToolApprovalResponse: ReturnType<
+        typeof useChat
+    >["addToolApprovalResponse"];
+    onFollowUp: (prompt: string) => void;
+}) {
+    return (
+        <Conversation className="flex-1">
+            <ConversationContent
+                className="mx-auto"
+                style={{ maxWidth: 720, padding: "24px 16px" }}
+            >
+                {messages.map((m, mi) => {
+                    // Collect this message's tool parts for the strip.
+                    // We render them as ONE strip per message (above the
+                    // message body) rather than interleaving each tool
+                    // chip wherever it appears in `parts`, which matches
+                    // the design's "tools" label preceding the AI reply.
+                    const toolParts =
+                        m.parts?.filter((p): p is ToolPart => isToolUIPart(p)) ??
+                        [];
+
+                    // Map AI SDK tool parts onto the ToolPillStrip's input
+                    // shape. `getToolName` strips the 'tool-' prefix.
+                    //
+                    // The SDK exposes a broader state union than the pill
+                    // component knows about — `approval-responded` and
+                    // `output-denied` are runtime transitions that don't
+                    // need their own visual variants. We collapse them to
+                    // the closest existing variant so the pill keeps the
+                    // user informed without us shipping new design work:
+                    //   - approval-responded → input-available (the tool
+                    //     is now allowed to execute and we're waiting on
+                    //     output, mirrors the post-input-pre-output state)
+                    //   - output-denied → output-error (user declined the
+                    //     approval; visually we want a "this didn't run"
+                    //     marker, which the error variant provides)
+                    const stripParts = toolParts.map((p) => {
+                        const state =
+                            p.state === "approval-responded"
+                                ? ("input-available" as const)
+                                : p.state === "output-denied"
+                                  ? ("output-error" as const)
+                                  : p.state;
+                        return {
+                            toolCallId: p.toolCallId,
+                            toolName: getToolName(p),
+                            state,
+                            input: p.input,
+                            output:
+                                p.state === "output-available"
+                                    ? p.output
+                                    : undefined,
+                            errorText:
+                                p.state === "output-error"
+                                    ? p.errorText
+                                    : p.state === "output-denied"
+                                      ? "User declined approval"
+                                      : undefined,
+                        };
+                    });
+
+                    // Approval-requested parts get extracted so we can
+                    // render an ApprovalPrompt below the strip. There can
+                    // only be one approval pending at a time per message
+                    // (create_deal is our only needsApproval tool today).
+                    const approvalPart = toolParts.find(
+                        (p) => p.state === "approval-requested",
+                    );
+
+                    // Detect "advisor pending" — research model finished
+                    // streaming but the advisor hasn't emitted a verdict
+                    // yet. Show ShimmerBlock so the 3-5s wait reads as
+                    // intentional. Only relevant for the last message
+                    // while we're still streaming.
+                    const isLast = mi === messages.length - 1;
+                    const hasAnalysisResult = toolParts.some(
+                        (p) =>
+                            p.state === "output-available" &&
+                            (getToolName(p) === "analyze_deal" ||
+                                getToolName(p) === "pull_comps"),
+                    );
+                    const hasVerdict =
+                        m.parts?.some((p) => p.type === "data-verdict") ?? false;
+                    const showAdvising =
+                        isLast &&
+                        m.role === "assistant" &&
+                        status === "streaming" &&
+                        hasAnalysisResult &&
+                        !hasVerdict;
+
+                    return (
+                        <Message key={m.id} from={m.role}>
+                            <MessageContent>
+                                {/* Tool pill strip — sits BEFORE the
+                                    AI text so the user sees "what is the
+                                    agent doing" before reading the result.
+                                    Only rendered for assistant messages
+                                    with tool calls. */}
+                                {m.role === "assistant" &&
+                                    stripParts.length > 0 && (
+                                        <ToolPillStrip
+                                            parts={stripParts}
+                                            expandedToolCallId={
+                                                expandedToolCallId
+                                            }
+                                            onToggleExpanded={
+                                                setExpandedToolCallId
+                                            }
+                                        />
+                                    )}
+
+                                {m.parts?.map((part, i) => {
+                                    // Plain text from the model.
+                                    if (part.type === "text") {
+                                        return (
+                                            <MessageResponse key={i}>
+                                                {part.text}
+                                            </MessageResponse>
+                                        );
+                                    }
+
+                                    // Tool parts are rendered as the strip
+                                    // above; skip them in the inline pass.
+                                    if (isToolUIPart(part)) {
+                                        return null;
+                                    }
+
+                                    // Custom data-verdict part — emitted
+                                    // by the advisor step. Renders as the
+                                    // VerdictCard (banner + tile grid +
+                                    // risks + narrative + chips).
+                                    if (part.type === "data-verdict") {
+                                        const verdict = (
+                                            part as { data: Verdict }
+                                        ).data;
+                                        return (
+                                            <VerdictCard
+                                                key={i}
+                                                verdict={verdict}
+                                                onFollowUp={onFollowUp}
+                                            />
+                                        );
+                                    }
+
+                                    // Any part type we haven't handled
+                                    // (reasoning, source, file, other
+                                    // data-* types) — skip silently.
+                                    return null;
+                                })}
+
+                                {/* ApprovalPrompt — rendered AFTER the
+                                    inline message body so it visually
+                                    follows the tool strip and any other
+                                    parts. The amber accent makes it
+                                    impossible to miss. */}
+                                {approvalPart &&
+                                    approvalPart.state ===
+                                        "approval-requested" && (
+                                        <ApprovalPrompt
+                                            address={
+                                                (
+                                                    approvalPart.input as {
+                                                        address?: string;
+                                                    }
+                                                )?.address ?? "this deal"
+                                            }
+                                            onApprove={() =>
+                                                addToolApprovalResponse({
+                                                    id: approvalPart.approval
+                                                        .id,
+                                                    approved: true,
+                                                })
+                                            }
+                                            onSkip={() =>
+                                                addToolApprovalResponse({
+                                                    id: approvalPart.approval
+                                                        .id,
+                                                    approved: false,
+                                                })
+                                            }
+                                        />
+                                    )}
+
+                                {/* Advisor-pending shimmer — bridges the
+                                    research-done / verdict-not-yet gap.
+                                    Replaces the AI Elements <Shimmer> with
+                                    the design's 4-bar block + pulse dot. */}
+                                {showAdvising && (
+                                    <div className="my-3">
+                                        <ShimmerBlock label="building verdict…" />
+                                    </div>
+                                )}
+                            </MessageContent>
+                        </Message>
+                    );
+                })}
+
+                {/* Top-level streaming state — when the user has just
+                    submitted but no tokens have arrived yet. ShimmerBlock
+                    fills the gap so the input doesn't feel frozen. */}
+                {status === "submitted" && (
+                    <div className="my-3">
+                        <ShimmerBlock label="thinking…" />
+                    </div>
+                )}
+            </ConversationContent>
+
+            <ConversationScrollButton />
+        </Conversation>
     );
 }

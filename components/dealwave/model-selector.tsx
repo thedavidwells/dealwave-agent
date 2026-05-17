@@ -227,28 +227,38 @@ function ModelSelect({
     // the Select root with TooltipTrigger asChild silently no-ops (the
     // root isn't slottable), which is why an earlier pass appeared to
     // do nothing on hover.
+    //
+    // Styling mirrors the design-handoff pill aesthetic: small, dim, and
+    // unobtrusive — these dropdowns are configuration controls, not the
+    // primary UI affordance. Token references (--dw-surface-1, --dw-border)
+    // come from app/globals.css.
     return (
         <Select value={value} onValueChange={onValueChange}>
             <Tooltip>
                 <TooltipTrigger asChild>
                     <SelectTrigger
                         size="sm"
-                        className="h-7 gap-1.5 rounded-full border-dashed bg-transparent px-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                        className="h-7 gap-1.5 rounded-full border bg-[var(--dw-surface-1)] border-[var(--dw-border)] px-3 text-[11px] font-normal text-[var(--dw-sub)] uppercase tracking-wide transition-colors hover:border-[var(--dw-border-md)] focus-visible:ring-0 focus-visible:border-[var(--dw-border-str)]"
                         aria-label={`${label} model`}
                     >
-                        <span className="text-muted-foreground/70">
+                        <span className="text-[var(--dw-muted)]">
                             {label}
                         </span>
-                        <span className="text-foreground/80 normal-case tracking-normal">
+                        <span className="text-[var(--dw-text)] normal-case tracking-normal font-medium">
                             <SelectValue>
                                 {displayRaw ? value : shortLabel(value)}
                             </SelectValue>
                         </span>
                     </SelectTrigger>
                 </TooltipTrigger>
-                <TooltipContent side="top">{tooltip}</TooltipContent>
+                <TooltipContent
+                    side="top"
+                    className="bg-[var(--dw-surface-3)] border border-[var(--dw-border-str)] text-[var(--dw-text)]"
+                >
+                    {tooltip}
+                </TooltipContent>
             </Tooltip>
-            <SelectContent>
+            <SelectContent className="bg-[var(--dw-surface-3)] border-[var(--dw-border-str)]">
                 {options.map((opt) => (
                     <SelectItem key={opt} value={opt}>
                         {opt}
