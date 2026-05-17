@@ -51,8 +51,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
 // VerdictCard renders the typed Verdict object emitted by the Sonnet
 // synthesis step (custom data-verdict part on the message stream).
-// This is the Concept 01 visual centerpiece: banner + metric tiles +
-// risk warnings + follow-up suggestion chips.
+// Composed of: banner, metric tile strip, risk warnings, follow-up chips.
 import { VerdictCard, type Verdict } from "@/components/dealwave/verdict-card";
 
 export default function Home() {
@@ -216,8 +215,9 @@ export default function Home() {
                                                     </ToolContent>
                                                     {/* Approval gate — when a tool has needsApproval:true, the loop pauses
                                                     at approval-requested state. The user must respond before execute fires.
-                                                    This is the human-in-the-loop demo moment. We replace this minimal
-                                                    button row with the polished Action Required block Sunday. */}
+                                                    This is the human-in-the-loop pattern: explicit user consent before any
+                                                    consequential write. The minimal button row here can be replaced with a
+                                                    designed Action Required block later. */}
                                                     {part.state ===
                                                         "approval-requested" && (
                                                         <div className="flex gap-2 border-t border-border/50 p-3">
@@ -261,8 +261,8 @@ export default function Home() {
 
                                         // Custom data-verdict part — emitted by the
                                         // Sonnet synthesis step after the tool loop
-                                        // completes. Renders as the Concept 01 verdict
-                                        // banner + metric tile strip + risk warnings +
+                                        // completes. Renders as a verdict banner +
+                                        // metric tile strip + risk warnings +
                                         // follow-up chips.
                                         if (part.type === "data-verdict") {
                                             // `data` is typed `unknown` at the UIMessage

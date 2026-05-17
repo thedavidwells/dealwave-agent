@@ -19,7 +19,9 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { start } from "workflow/api";
 import { dealWaveFetch } from "../dealwave-client";
+import { dealReviewWorkflow } from "@/lib/workflows/deal-analyst";
 
 // Minimal surface for the agent. DealCreateInputSchema in DealWave supports
 // many more fields (status, pipeline_status, deal_tags, follow_up_at, etc.),
@@ -109,6 +111,29 @@ export const createDealTool = tool({
                           ? "DealWave rejected the deal data. Surface the validation error to the user."
                           : "Unknown error — apologize and tell the user the save failed.",
             };
+        }
+
+        // Kick off the durable post-save review workflow.
+        //
+        // This is the Workflow SDK integration point. The 'use workflow'
+        // directive inside dealReviewWorkflow makes its execution state
+        // durable — the workflow pauses on a reviewHook waiting for the
+        // user to mark this deal as reviewed (or skipped) in their
+        // pipeline. That wait could be 5 minutes or 5 days; the workflow
+        // survives serverless restarts, deploys, and tab refreshes.
+        //
+        // Fire-and-forget (void) — we don't await the workflow because
+        // it pauses indefinitely on the hook. The tool returns the saved
+        // deal to the model immediately so the chat can complete.
+        // The workflow continues in the background until /api/agent/approve
+        // resumes it.
+        const dealId = (result.data as { id?: string })?.id;
+        if (dealId) {
+            // start() from workflow/api kicks off a workflow instance
+            // through the durable execution runtime. Calling the workflow
+            // function directly throws — workflows aren't regular async
+            // functions; they have to be created via start().
+            await start(dealReviewWorkflow, [dealId]);
         }
 
         // Success — return the created deal so the model can confirm to the user

@@ -1,0 +1,38 @@
+{
+  "_doc": "Regression test set for the DealWave agent. Each case asserts the agent's autonomous tool-selection behavior and the synthesized verdict's shape and value ranges. Run with `pnpm eval`. Production extension: wire to CI to fail builds on regression.",
+  "cases": [
+    {
+      "id": "burntwood-low-confidence",
+      "description": "Property with a severity-5 valuation flag. Agent should auto-chain pull_comps based on system-prompt signals (confidenceScore < 60, severity-4+ flag mentioning valuation).",
+      "input": "Analyze 10165 W Burntwood Ct, Boise, ID",
+      "expected": {
+        "toolsCalled": ["analyze_deal", "pull_comps"],
+        "recommendation": ["strong-deal", "good-deal", "investigate"],
+        "dealScoreMin": 70,
+        "dealScoreMax": 100,
+        "narrativeIncludes": ["ARV", "comp"]
+      }
+    },
+    {
+      "id": "baja-way-strong-deal",
+      "description": "High-score property (dealScore typically 91, Grade A). Verdict may be strong-deal / good-deal / investigate depending on how Sonnet weighs the severity-5 valuation spread against the high score. All three are reasonable.",
+      "input": "Analyze 3861 S Baja Way, Boise, ID",
+      "expected": {
+        "toolsCalled": ["analyze_deal", "pull_comps"],
+        "recommendation": ["strong-deal", "good-deal", "investigate"],
+        "dealScoreMin": 80,
+        "dealScoreMax": 100,
+        "narrativeIncludes": ["ARV"]
+      }
+    },
+    {
+      "id": "off-topic-no-tool-use",
+      "description": "Conceptual question — agent should NOT call analysis tools. Catches regressions where a prompt change makes the agent over-eager to invoke tools.",
+      "input": "What does ARV stand for in real estate investing?",
+      "expected": {
+        "toolsCalled": [],
+        "noVerdict": true
+      }
+    }
+  ]
+}

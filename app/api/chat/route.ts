@@ -228,10 +228,11 @@ export async function POST(request: Request) {
                 try {
                     const { object: verdict } = await generateObject({
                         // Sonnet for the final synthesis: same structured-output
-                        // quality as Opus for this task (validated tool results →
-                        // fixed schema), but ~2-3x faster and ~1/5th the cost.
-                        // Shows up in the AI Gateway dashboard as a SEPARATE row
-                        // from Haiku — the demo proof of model tiering. 🎯
+                        // quality as Opus on this kind of task (validated tool
+                        // results → fixed schema), but roughly 2-3x faster and
+                        // 1/5th the cost. Appears as a separate row in the
+                        // AI Gateway dashboard so per-step cost and latency are
+                        // observable per model tier.
                         model: "anthropic/claude-sonnet-4-6",
                         schema: VerdictSchema,
                         system: `You synthesize a real-estate deal analysis into a

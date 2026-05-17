@@ -3,7 +3,7 @@
 // components/dealwave/verdict-card.tsx
 //
 // Renders the typed Verdict object emitted by the Sonnet synthesis step
-// (see app/api/chat/route.ts). This is the visual centerpiece of Concept 01:
+// (see app/api/chat/route.ts). Composes:
 //   - Verdict banner (recommendation pill + headline + dealScore)
 //   - Metric tile strip (4-6 horizontal tiles with health colors)
 //   - Risk warnings (severity 4+ inline alerts)
