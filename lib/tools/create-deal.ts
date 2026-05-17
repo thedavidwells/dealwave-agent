@@ -10,7 +10,7 @@
 // addToolApprovalResponse.
 //
 // This is the human-in-the-loop primitive — never persist a deal without
-// explicit user consent. Workflow SDK will make this pause durable on Sunday
+// explicit user consent. Workflow SDK will make this pause durable
 // (i.e. the workflow survives a serverless restart while waiting for the user
 // to click). Today the pause is in-process; refreshing the page loses state.
 //

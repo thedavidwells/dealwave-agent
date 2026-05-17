@@ -32,10 +32,13 @@ const pullCompsInputSchema = z.object({
         .describe("Search radius in miles. Leave unset for the default."),
     limit: z
         .number()
+        .int()
         .min(1, "Limit must be at least 1")
         .max(25, "Limit must be 25 or fewer")
         .optional()
-        .describe("Maximum number of comps to return (1–25). Leave unset for the default."),
+        .describe(
+            "Maximum number of comps to return (1–25). Leave unset for the default.",
+        ),
 });
 
 export const pullCompsTool = tool({
