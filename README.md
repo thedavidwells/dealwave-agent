@@ -98,6 +98,7 @@ Exit code is `0` on full pass, `1` on any failure. Wire to GitHub Actions to gat
 - **Bearer auth via explicit API key.** OIDC works as a fallback, but the explicit `AI_GATEWAY_API_KEY` makes localhost requests attribute to the project correctly (where the OIDC path is harder to wire up).
 - **Structured output as the eval target.** Asserting on free-text narratives is noisy; the Zod-validated `Verdict` gives us discrete fields (`recommendation`, `dealScore`, `recommendedStrategy`) that drift cleanly catches prompt-tuning regressions.
 - **No client-side Zod.** `VerdictCard` mirrors the Verdict type structurally and trusts server validation. Keeps Zod out of the client bundle.
+- **Image optimization via Next.js Image.** The deal page's property hero uses `next/image` against DealWave's Supabase Storage CDN. Vercel's image service serves AVIF/WebP variants per client, sizes responsively, and lazy-loads below the fold. The page itself is ISR'd at 60s; the image transforms cache independently. Two caching layers for one page — the right split.
 
 ## Known limitations
 

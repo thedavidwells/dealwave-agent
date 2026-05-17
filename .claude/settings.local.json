@@ -9,7 +9,9 @@
       "Bash(curl -sS -o /dev/null -w \"GET /deals/test-id HTTP %{http_code}\\\\n\" http://localhost:3000/deals/test-id)",
       "Bash(pnpm eval *)",
       "Bash(curl -sS -o /dev/null -w \"GET /deals/test HTTP %{http_code}\\\\n\" http://localhost:3000/deals/test)",
-      "Bash(pnpm lint *)"
+      "Bash(pnpm lint *)",
+      "Bash(curl -sS -o /dev/null -w \"OPT supabase HTTP %{http_code}\\\\n\" \"http://localhost:3000/_next/image?url=https%3A%2F%2Fabc.supabase.co%2Fstorage%2Fv1%2Fobject%2Fpublic%2Fdeals%2Fdoes-not-exist.png&w=640&q=75\")",
+      "Bash(curl -sS -o /dev/null -w \"OPT bad-host HTTP %{http_code}\\\\n\" \"http://localhost:3000/_next/image?url=https%3A%2F%2Fevil.example.com%2Ffoo.png&w=640&q=75\")"
     ]
   }
 }

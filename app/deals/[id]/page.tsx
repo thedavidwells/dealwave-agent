@@ -11,6 +11,7 @@
 // primary mutation surface (research + advisor pipeline); this page is
 // the "look at what I saved" view that closes the loop.
 
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -46,6 +47,12 @@ interface DealRecord {
     status?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
+    // Public Supabase Storage URL — populated as a side-effect of the
+    // analyze pipeline. Older deals (saved before the pipeline started
+    // capturing photos) or in-flight saves will have this as null; the
+    // page renders without the hero in that case rather than showing a
+    // broken or placeholder image.
+    property_image_url?: string | null;
 }
 
 // Human-readable strategy label. The API stores snake_case enums
@@ -144,6 +151,35 @@ export default async function DealDetailPage({
                 eye doesn't have to re-anchor when navigating between
                 chat and detail. */}
             <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
+                {/* Property image hero — only when DealWave's analyze
+                    pipeline captured a photo. Lives ABOVE the title so
+                    the page reads "this is the property" before "here
+                    are its numbers".
+                    Implementation notes:
+                    - aspect-video locks the wrapper to 16:9 so the
+                      layout doesn't shift while the optimized image
+                      loads (avoids a CLS hit on Lighthouse).
+                    - fill + sizes lets next/image pick the right
+                      width-variant for the viewport rather than always
+                      serving the largest variant.
+                    - priority because this is above-the-fold on the
+                      page and we want the LCP candidate eager-loaded
+                      via <link rel="preload">.
+                    - rounded-lg + overflow-hidden so the image clips to
+                      the 8px corners shared by other dark-theme cards. */}
+                {deal.property_image_url && (
+                    <div className="relative mb-6 aspect-video w-full overflow-hidden rounded-lg border border-[var(--dw-border)] bg-[var(--dw-surface-1)]">
+                        <Image
+                            src={deal.property_image_url}
+                            alt={`Photo of ${deal.address}`}
+                            fill
+                            priority
+                            sizes="(max-width: 768px) 100vw, 720px"
+                            className="object-cover"
+                        />
+                    </div>
+                )}
+
                 {/* Title block. Address is the canonical identifier in
                     the user's head ("the Burntwood Ct deal"), so it gets
                     h1 weight; the optional `name` is a user-supplied
