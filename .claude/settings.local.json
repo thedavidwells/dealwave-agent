@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(pkill -f \"next-server\")",
+      "Bash(pnpm dev *)",
+      "Bash(curl -sS -o /dev/null -w \"GET / HTTP %{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -sS -o /dev/null -w \"GET /deals/test-id HTTP %{http_code}\\\\n\" http://localhost:3000/deals/test-id)"
+    ]
+  }
+}

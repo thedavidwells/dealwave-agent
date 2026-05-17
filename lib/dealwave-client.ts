@@ -33,11 +33,30 @@ export async function dealWaveFetch<T = unknown>(
     options: {
         method?: "GET" | "POST" | "PATCH" | "DELETE";
         body?: unknown;
+        // Query-string params for GET requests. Undefined entries are
+        // dropped before serialization so callers can pass an object
+        // with optional fields without filtering it themselves.
+        query?: Record<string, string | number | boolean | undefined>;
     } = {},
 ): Promise<DealWaveResult<T>> {
     // Implementation for fetching from DealWave API
-    const url = `${API_BASE}${path}`;
     const method = options.method || "GET";
+    const isGet = method === "GET";
+
+    // Build the final URL. For GETs, fold any defined query params into
+    // a URL-encoded querystring. Undefined values get dropped — caller
+    // can hand us a partial Zod-parsed object and we'll Do The Right
+    // Thing without making them filter first.
+    let url = `${API_BASE}${path}`;
+    if (options.query) {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(options.query)) {
+            if (value === undefined) continue;
+            params.append(key, String(value));
+        }
+        const qs = params.toString();
+        if (qs) url += `?${qs}`;
+    }
 
     // 30-second timeout for all DealWave API calls
     // Pipeline is REAPI + Zenrows + AVN -> can be slow sometimes, so we want to give it a bit of time.
@@ -45,13 +64,19 @@ export async function dealWaveFetch<T = unknown>(
     const timeout = setTimeout(() => controller.abort(), 30_000);
 
     try {
+        // Build headers conditionally: GETs have no body, so a stray
+        // Content-Type: application/json header is meaningless and some
+        // gateways treat the combo as malformed. POSTs / PATCHes keep
+        // the header so the body deserializes correctly.
+        const headers: Record<string, string> = {
+            Authorization: `Bearer ${TOKEN}`,
+        };
+        if (!isGet) headers["Content-Type"] = "application/json";
+
         const res = await fetch(url, {
             method,
-            headers: {
-                Authorization: `Bearer ${TOKEN}`,
-                "Content-Type": "application/json",
-            },
-            body: options.body ? JSON.stringify(options.body) : undefined,
+            headers,
+            body: !isGet && options.body ? JSON.stringify(options.body) : undefined,
             signal: controller.signal,
         });
 

@@ -9,6 +9,7 @@ import {
 import { analyzeDealTool } from "@/lib/tools/analyze-deal";
 import { pullCompsTool } from "@/lib/tools/pull-comps";
 import { createDealTool } from "@/lib/tools/create-deal";
+import { listDealsTool } from "@/lib/tools/list-deals";
 import { VerdictSchema } from "@/lib/schemas/verdict";
 
 // Disable Next.js's default response caching for this route
@@ -209,8 +210,33 @@ export async function POST(request: Request) {
                     so the user has context when they revisit), investment_strategy
                     matching the verdict's recommendedStrategy.
 
+                    When create_deal succeeds, the tool result contains a 'deal' object
+                    with an 'id' field (e.g. deal.id = "abc-123"). Your confirmation
+                    text MUST include a markdown link to the deal's detail page using
+                    the EXACT format: [View this deal →](/deals/<deal-id>) — substituting
+                    the real id from the tool result. Example confirmation:
+                    "✅ Saved 2852 NW 14th St to your pipeline. [View this deal →](/deals/abc-123)"
+                    Never invent or guess a deal id — use only the id from the tool
+                    result. If the tool result somehow lacks an id, omit the link
+                    rather than fabricating one.
+
                     If the user clicks Skip in the approval card OR explicitly declines
                     in text, acknowledge briefly and offer to help with the next analysis.
+
+                    PIPELINE QUERIES — call list_deals ONLY when the user asks about
+                    their existing saved deals, pipeline, or deal history. Trigger
+                    examples: "show me my recent deals", "what was my last deal in
+                    Boise?", "any wholesale deals saved?", "what's in my pipeline?",
+                    "show me deals with status X". DO NOT call list_deals during a
+                    fresh property analysis where the user gave an address (use
+                    analyze_deal for that). After list_deals returns, format the
+                    response as a markdown table with columns: Address, Score (if
+                    present), Strategy (if present), Status, and View. The View
+                    column MUST contain a markdown link [View →](/deals/<id>) using
+                    each row's real id from the tool result — never invent ids. If
+                    the result is empty, say so plainly ("No deals match those
+                    filters."). If only 1-2 rows came back, a short bulleted list is
+                    fine instead of a table.
 
                     Be concise. Lead with the recommendation (strong-deal / good-deal /
                     investigate / pass), then the supporting numbers, then the caveats.
@@ -225,6 +251,7 @@ export async function POST(request: Request) {
                     analyze_deal: analyzeDealTool,
                     pull_comps: pullCompsTool,
                     create_deal: createDealTool,
+                    list_deals: listDealsTool,
                 },
 
                 // Stop after 8 steps. This helps manage cost and prevents infinite loops if the model gets confused. Adjust as needed.

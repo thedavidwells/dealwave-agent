@@ -323,6 +323,29 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
+// Whitelist internal (relative path) and same-origin links. By default
+// Streamdown wraps every link with an "external website" safety modal,
+// which is wrong for links to our own routes (e.g. /deals/[id]). The
+// modal also injects a <div> inside a <p>, producing hydration warnings.
+const linkSafety = {
+  enabled: true,
+  onLinkCheck: (url: string): boolean => {
+    // Relative URLs (e.g. "/deals/abc") are always our own routes.
+    if (url.startsWith("/") && !url.startsWith("//")) return true;
+    // Same-origin absolute URLs are trusted; everything else gets the
+    // safety modal. Falls back to "external" when window isn't defined
+    // (SSR pass) — safer to prompt than to silently allow.
+    if (typeof window !== "undefined") {
+      try {
+        return new URL(url).origin === window.location.origin;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  },
+};
+
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
@@ -331,6 +354,7 @@ export const MessageResponse = memo(
         className
       )}
       plugins={streamdownPlugins}
+      linkSafety={linkSafety}
       {...props}
     />
   ),
