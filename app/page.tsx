@@ -49,6 +49,11 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
+// VerdictCard renders the typed Verdict object emitted by the Sonnet
+// synthesis step (custom data-verdict part on the message stream).
+// This is the Concept 01 visual centerpiece: banner + metric tiles +
+// risk warnings + follow-up suggestion chips.
+import { VerdictCard, type Verdict } from "@/components/dealwave/verdict-card";
 
 export default function Home() {
     // useChat manages the full conversation state.
@@ -113,127 +118,199 @@ export default function Home() {
                         />
                     )}
 
-                    {messages.map((m) => (
-                        <Message key={m.id} from={m.role}>
-                            <MessageContent>
-                                {m.parts?.map((part, i) => {
-                                    // Plain text from the model.
-                                    // <Response> is a streaming-aware markdown renderer:
-                                    // headers, lists, code fences, and inline formatting all
-                                    // render correctly even while tokens are still arriving
-                                    // (no broken layouts mid-stream).
-                                    if (part.type === "text") {
-                                        return (
-                                            <MessageResponse key={i}>
-                                                {part.text}
-                                            </MessageResponse>
-                                        );
-                                    }
+                    {messages.map((m, mi) => {
+                        // Detect "synthesis pending" state for THIS message.
+                        // After Haiku finishes streaming text + tool results,
+                        // Sonnet runs the verdict synthesis (3-5s). During that
+                        // window the message has analysis tool results but no
+                        // data-verdict part yet. We show a Shimmer in that gap
+                        // so the wait feels intentional, not broken.
+                        const isLast = mi === messages.length - 1;
+                        const hasAnalysisResult =
+                            m.parts?.some(
+                                (p) =>
+                                    isToolUIPart(p) &&
+                                    p.state === "output-available" &&
+                                    (getToolName(p) === "analyze_deal" ||
+                                        getToolName(p) === "pull_comps"),
+                            ) ?? false;
+                        const hasVerdict =
+                            m.parts?.some((p) => p.type === "data-verdict") ??
+                            false;
+                        const showSynthesizing =
+                            isLast &&
+                            m.role === "assistant" &&
+                            status === "streaming" &&
+                            hasAnalysisResult &&
+                            !hasVerdict;
 
-                                    // Tool call in progress — the model decided to call a tool.
-                                    // The exact type name depends on the tool. v5 emits 'tool-<toolname>'
-                                    // for each registered tool, with sub-states for input/output:
-                                    //   'input-streaming' | 'input-available' | 'output-available' | 'output-error'
-                                    // The <Tool> family renders this as a collapsible card with
-                                    // a status indicator (spinner / check / error icon), the input
-                                    // JSON, and the output JSON. Auto-opens on error so the user
-                                    // sees what went wrong without clicking to expand.
-                                    if (isToolUIPart(part)) {
-                                        return (
-                                            <Tool
-                                                key={i}
-                                                defaultOpen={
-                                                    part.state ===
-                                                    "output-error"
-                                                }
-                                            >
-                                                {/* ToolHeader props are a discriminated union:
+                        return (
+                            <Message key={m.id} from={m.role}>
+                                <MessageContent>
+                                    {m.parts?.map((part, i) => {
+                                        // Plain text from the model.
+                                        // <Response> is a streaming-aware markdown renderer:
+                                        // headers, lists, code fences, and inline formatting all
+                                        // render correctly even while tokens are still arriving
+                                        // (no broken layouts mid-stream).
+                                        if (part.type === "text") {
+                                            return (
+                                                <MessageResponse key={i}>
+                                                    {part.text}
+                                                </MessageResponse>
+                                            );
+                                        }
+
+                                        // Tool call in progress — the model decided to call a tool.
+                                        // The exact type name depends on the tool. v5 emits 'tool-<toolname>'
+                                        // for each registered tool, with sub-states for input/output:
+                                        //   'input-streaming' | 'input-available' | 'output-available' | 'output-error'
+                                        // The <Tool> family renders this as a collapsible card with
+                                        // a status indicator (spinner / check / error icon), the input
+                                        // JSON, and the output JSON. Auto-opens on error so the user
+                                        // sees what went wrong without clicking to expand.
+                                        if (isToolUIPart(part)) {
+                                            return (
+                                                <Tool
+                                                    key={i}
+                                                    defaultOpen={
+                                                        part.state ===
+                                                        "output-error"
+                                                    }
+                                                >
+                                                    {/* ToolHeader props are a discriminated union:
                 - static tools (type = `tool-${name}`) encode the name in the type
                 - dynamic tools (type = "dynamic-tool") require a separate toolName field.
                 We branch so TS narrows correctly. Our project only uses static tools
                 today, but handling both makes the code future-proof and satisfies the
                 type system without an unsafe `as` cast. */}
-                                                {part.type ===
-                                                "dynamic-tool" ? (
-                                                    <ToolHeader
-                                                        type={part.type}
-                                                        state={part.state}
-                                                        toolName={part.toolName}
-                                                    />
-                                                ) : (
-                                                    <ToolHeader
-                                                        type={part.type}
-                                                        state={part.state}
-                                                    />
-                                                )}
+                                                    {part.type ===
+                                                    "dynamic-tool" ? (
+                                                        <ToolHeader
+                                                            type={part.type}
+                                                            state={part.state}
+                                                            toolName={
+                                                                part.toolName
+                                                            }
+                                                        />
+                                                    ) : (
+                                                        <ToolHeader
+                                                            type={part.type}
+                                                            state={part.state}
+                                                        />
+                                                    )}
 
-                                                <ToolContent>
-                                                    <ToolInput
-                                                        input={part.input}
-                                                    />
-                                                    <ToolOutput
-                                                        output={part.output}
-                                                        errorText={
-                                                            part.state ===
-                                                            "output-error"
-                                                                ? part.errorText
-                                                                : undefined
-                                                        }
-                                                    />
-                                                </ToolContent>
-                                                {/* Approval gate — when a tool has needsApproval:true, the loop pauses
+                                                    <ToolContent>
+                                                        <ToolInput
+                                                            input={part.input}
+                                                        />
+                                                        <ToolOutput
+                                                            output={part.output}
+                                                            errorText={
+                                                                part.state ===
+                                                                "output-error"
+                                                                    ? part.errorText
+                                                                    : undefined
+                                                            }
+                                                        />
+                                                    </ToolContent>
+                                                    {/* Approval gate — when a tool has needsApproval:true, the loop pauses
                                                     at approval-requested state. The user must respond before execute fires.
                                                     This is the human-in-the-loop demo moment. We replace this minimal
                                                     button row with the polished Action Required block Sunday. */}
-                                                {part.state ===
-                                                    "approval-requested" && (
-                                                    <div className="flex gap-2 border-t border-border/50 p-3">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() =>
-                                                                addToolApprovalResponse(
-                                                                    {
-                                                                        id: part
-                                                                            .approval
-                                                                            .id, // ← was part.toolCallId
-                                                                        approved: true,
-                                                                    },
-                                                                )
-                                                            }
-                                                            className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground"
-                                                        >
-                                                            Save Deal
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() =>
-                                                                addToolApprovalResponse(
-                                                                    {
-                                                                        id: part
-                                                                            .approval
-                                                                            .id, // ← was part.toolCallId
-                                                                        approved: false,
-                                                                    },
-                                                                )
-                                                            }
-                                                            className="rounded-md border px-4 py-1.5 text-sm"
-                                                        >
-                                                            Skip
-                                                        </button>
-                                                    </div>
-                                                )}
-                                            </Tool>
-                                        );
-                                    }
+                                                    {part.state ===
+                                                        "approval-requested" && (
+                                                        <div className="flex gap-2 border-t border-border/50 p-3">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                    addToolApprovalResponse(
+                                                                        {
+                                                                            id: part
+                                                                                .approval
+                                                                                .id, // ← was part.toolCallId
+                                                                            approved: true,
+                                                                        },
+                                                                    )
+                                                                }
+                                                                className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground"
+                                                            >
+                                                                Save Deal
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                    addToolApprovalResponse(
+                                                                        {
+                                                                            id: part
+                                                                                .approval
+                                                                                .id, // ← was part.toolCallId
+                                                                            approved: false,
+                                                                        },
+                                                                    )
+                                                                }
+                                                                className="rounded-md border px-4 py-1.5 text-sm"
+                                                            >
+                                                                Skip
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </Tool>
+                                            );
+                                        }
 
-                                    // Any part type we haven't explicitly handled
-                                    // (reasoning, source, file, data-*, etc.) — skip silently.
-                                    // Add specific renderers here as we need them.
-                                    return null;
-                                })}
-                            </MessageContent>
-                        </Message>
-                    ))}
+                                        // Custom data-verdict part — emitted by the
+                                        // Sonnet synthesis step after the tool loop
+                                        // completes. Renders as the Concept 01 verdict
+                                        // banner + metric tile strip + risk warnings +
+                                        // follow-up chips.
+                                        if (part.type === "data-verdict") {
+                                            // `data` is typed `unknown` at the UIMessage
+                                            // union level; we trust the server's
+                                            // generateObject to have validated against
+                                            // VerdictSchema before emitting.
+                                            const verdict = (
+                                                part as { data: Verdict }
+                                            ).data;
+                                            return (
+                                                <VerdictCard
+                                                    key={i}
+                                                    verdict={verdict}
+                                                    // Clicking a follow-up chip fires a
+                                                    // new user turn — the chip becomes a
+                                                    // real conversation message.
+                                                    onFollowUp={(prompt) =>
+                                                        sendMessage({
+                                                            text: prompt,
+                                                        })
+                                                    }
+                                                />
+                                            );
+                                        }
+
+                                        // Any part type we haven't explicitly handled
+                                        // (reasoning, source, file, data-*, etc.) — skip silently.
+                                        // Add specific renderers here as we need them.
+                                        return null;
+                                    })}
+
+                                    {/* Synthesis-pending Shimmer — bridges the 3-5s
+                                        wait between Haiku finishing its text response
+                                        and Sonnet emitting the typed verdict. Without
+                                        this the input feels frozen; with it the wait
+                                        feels intentional. Disappears the moment the
+                                        verdict arrives and VerdictCard renders above. */}
+                                    {showSynthesizing && (
+                                        <div className="my-3">
+                                            <Shimmer>
+                                                Generating detailed verdict…
+                                            </Shimmer>
+                                        </div>
+                                    )}
+                                </MessageContent>
+                            </Message>
+                        );
+                    })}
 
                     {/* Status indicator — shows when the model is thinking/streaming.
                         status: 'ready' | 'submitted' | 'streaming' | 'error'.

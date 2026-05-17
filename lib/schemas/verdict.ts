@@ -127,14 +127,21 @@ export const VerdictSchema = z.object({
 
     // Contextual follow-up chips below the message.
     // Tailor to the strategy + verdict.
+    //
+    // max(80) per chip: long enough for context-specific suggestions
+    // ("Save to pipeline if ARV confirmed above $400K") but still short
+    // enough to render as pill buttons without dominating the layout.
+    // Earlier max(40) was too tight — rejected useful suggestions like
+    // "Inspect for deferred maintenance (1959 build)".
     followUps: z
-        .array(z.string().max(40))
+        .array(z.string().max(80))
         .min(2)
         .max(4)
         .describe(
-            "Short next-action prompts. Examples: 'Run at 7% vacancy', " +
-                "'Show all 12 comps', 'Save to pipeline'. Tailor to the " +
-                "recommendation — surface 'Save to pipeline' first for strong-deal.",
+            "Short next-action prompts (ideally ≤ 50 chars each). " +
+                "Examples: 'Run at 7% vacancy', 'Show all 12 comps', " +
+                "'Save to pipeline'. Tailor to the recommendation — " +
+                "surface 'Save to pipeline' first for strong-deal verdicts.",
         ),
 
     // True for strong-deal / good-deal where saving is a natural next step.

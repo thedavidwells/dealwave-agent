@@ -92,26 +92,38 @@ export async function POST(request: Request) {
                     with severity >= 4 prominently. Never invent numbers — only use values
                     returned by tools.
 
-                    After completing analysis (analyze_deal and optionally pull_comps), if
-                    the verdict is strong-deal or good-deal, OFFER to save the deal by calling
-                    create_deal. The create_deal tool will pause the loop and ask the user
-                    for explicit approval before persisting — never assume permission. When
-                    calling create_deal, pass:
-                    - address (same one analyzed)
-                    - name (optional friendly label)
-                    - notes (1-2 sentence summary of the deal: score, strategy, key numbers)
-                    - investment_strategy (your recommended strategy)
+                    End your analysis with the recommendation and supporting numbers.
+                    DO NOT ask the user "would you like to save this?" or "should I save
+                    this to your pipeline?" — a structured verdict card will render below
+                    your text response with the recommendation pill, metric tiles, and
+                    clickable follow-up chips (including "Save to pipeline" when applicable).
+                    Those chips handle next-step actions. Your job is the analysis prose;
+                    the verdict card handles the call-to-action.
 
-                    If the user explicitly says "save it" or "save to pipeline" or similar,
-                    call create_deal immediately.
+                    When the user clicks a "Save to pipeline" chip OR explicitly says
+                    "save it" / "save to pipeline" / "yes save" / "add it" or similar —
+                    call create_deal IMMEDIATELY. Do NOT first write a confirmation text
+                    restating the deal details. The user just saw the full verdict card
+                    above with metric tiles, score, recommendation, and risks; restating
+                    that in prose adds nothing and forces an extra round-trip. The
+                    create_deal tool itself pauses the loop for the final approval via
+                    a UI button (Save Deal / Skip) — that IS the hard confirmation step.
+                    Your text response after their request should be brief, like
+                    "Saving…" or nothing at all; the approval card will appear inline.
 
-                    If the user declines or says skip, acknowledge gracefully and offer to
-                    help with the next analysis.
+                    Pass to create_deal: address, name (short label like "Phoenix SFR
+                    Flip"), notes (1-2 sentence summary with score/strategy/key numbers
+                    so the user has context when they revisit), investment_strategy
+                    matching the verdict's recommendedStrategy.
+
+                    If the user clicks Skip in the approval card OR explicitly declines
+                    in text, acknowledge briefly and offer to help with the next analysis.
 
                     Be concise. Lead with the recommendation (strong-deal / good-deal /
                     investigate / pass), then the supporting numbers, then the caveats.
-                    If you ran both analyze_deal and pull_comps, briefly mention what the
-                    comps confirmed or challenged.`,
+                    If you ran both analyze_deal and pull_comps, briefly mention what
+                    the comps confirmed or challenged. STOP after the analysis — do not
+                    trail with questions.`,
 
                 messages: modelMessages,
 
@@ -206,6 +218,71 @@ export async function POST(request: Request) {
                     if (part.toolName === "create_deal") {
                         touchedCreateDeal = true;
                     }
+                }
+            }
+
+            const shouldSynthesize =
+                analysisResults.length > 0 && !touchedCreateDeal;
+
+            if (shouldSynthesize) {
+                try {
+                    const { object: verdict } = await generateObject({
+                        // Sonnet for the final synthesis: same structured-output
+                        // quality as Opus for this task (validated tool results →
+                        // fixed schema), but ~2-3x faster and ~1/5th the cost.
+                        // Shows up in the AI Gateway dashboard as a SEPARATE row
+                        // from Haiku — the demo proof of model tiering. 🎯
+                        model: "anthropic/claude-sonnet-4-6",
+                        schema: VerdictSchema,
+                        system: `You synthesize a real-estate deal analysis into a
+                            structured verdict for a single-family investor.
+
+                            Use ONLY values from the tool results provided. Never invent figures.
+                            If pull_comps wasn't called, set dataConfidence based on analyze_deal's
+                            confidenceScore alone.
+
+                            Pick the recommendedStrategy that maximizes this deal's economics:
+                            - wholesale: wide spread, light repairs
+                            - flip: strong ARV, repair scope justified by profit
+                            - buy-and-hold: strong rent estimate, reasonable cash flow
+                            - brrrr: strong ARV + manageable repairs (refinance candidate)
+
+                            Metric tiles: pick 4-6 tiles relevant to the chosen strategy.
+                            - For flip → ARV, Repairs, Est. Profit, dealScore
+                            - For buy-and-hold → ARV, Rent Est., dealScore, equity position
+                            - For wholesale → ARV, MAO, Spread, Repairs
+
+                            Health logic per tile:
+                            - "strong" (green): above the conventional target for that metric under that strategy
+                            - "concern" (red): below target / problem signal
+                            - "neutral" (white): informational / no pass-fail judgment
+
+                            shouldOfferSave = true for strong-deal / good-deal verdicts.`,
+                        // Single user turn with the tool results as JSON.
+                        // Conversation ends with user → Anthropic accepts;
+                        // no dangling tool calls → no MissingToolResults error.
+                        prompt: `Synthesize a structured Verdict from these tool results:
+
+${JSON.stringify(analysisResults, null, 2)}`,
+                    });
+
+                    // Write the verdict as a custom data part. The client's
+                    // useChat receives a 'data-verdict' part; page.tsx renders
+                    // it as a VerdictCard (banner + metric tiles + chips).
+                    writer.write({
+                        type: "data-verdict",
+                        data: verdict,
+                    });
+
+                    console.log("[synthesis]", {
+                        model: "claude-sonnet-4-6",
+                        recommendation: verdict.recommendation,
+                        strategy: verdict.recommendedStrategy,
+                    });
+                } catch (synthErr) {
+                    // Synthesis failure shouldn't break the chat — the
+                    // streamed text from Haiku stands alone as a fallback.
+                    console.error("[synthesis-failed]", synthErr);
                 }
             }
 
