@@ -23,10 +23,16 @@ import { start } from "workflow/api";
 import { dealWaveFetch } from "../dealwave-client";
 import { dealReviewWorkflow } from "@/lib/workflows/deal-analyst";
 
-// Minimal surface for the agent. DealCreateInputSchema in DealWave supports
-// many more fields (status, pipeline_status, deal_tags, follow_up_at, etc.),
-// but for the agent we want a small surface the model can plausibly fill out.
-// The user can edit non-essential fields in the DealWave UI after the save.
+// The agent's create_deal surface. DealCreateInputSchema in DealWave supports
+// many more fields than this, but we expose only what the model can plausibly
+// fill out from the analyze_deal context. The user can edit non-essential
+// fields in the DealWave UI after the save.
+//
+// Enrichment fields (arv_estimate, mao, repairs, profit_spread, deal_score)
+// populate the speed_check JSONB so the My Deals dashboard card shows real
+// numbers instead of $0 placeholders, and the deal-detail page doesn't crash
+// on null `speed_check.manualComps`. See deal-card-metrics.ts in the dealwave
+// repo for the exact JSONB keys the dashboard reads.
 const createDealInputSchema = z.object({
     address: z
         .string()
@@ -66,6 +72,63 @@ const createDealInputSchema = z.object({
             "Recommended strategy from the analysis. Match this to the " +
                 "verdict's recommendedStrategy field.",
         ),
+
+    // ---- Enrichment fields — pass through from the analyze_deal result ----
+    // All optional; omit if the analyze_deal output didn't include the field.
+    // Keys match the camelCase shape of analyze_deal's response (what the
+    // model already has in context); the execute() function translates to
+    // the snake_case shape the DealWave dashboard reads.
+    property_image_url: z
+        .string()
+        .url()
+        .max(2000)
+        .optional()
+        .describe(
+            "Property image URL from analyze_deal's imageUrl / propertyDetails.imageUrl. " +
+                "Required for the My Deals card to show the image.",
+        ),
+    arv_estimate: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+            "From analyze_deal.arvEstimate. Populates the My Deals card ARV value.",
+        ),
+    arv_high: z
+        .number()
+        .positive()
+        .optional()
+        .describe("From analyze_deal.arvHigh. Fallback if arv_estimate missing."),
+    mao: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+            "From analyze_deal.mao. Populates the My Deals card Purchase value.",
+        ),
+    estimated_repairs: z
+        .number()
+        .nonnegative()
+        .optional()
+        .describe("From analyze_deal.estimatedRepairs."),
+    profit_spread: z
+        .number()
+        .optional()
+        .describe(
+            "From analyze_deal.estimatedProfit. Populates the My Deals card Spread value.",
+        ),
+    deal_score: z
+        .number()
+        .int()
+        .min(0)
+        .max(100)
+        .optional()
+        .describe("From analyze_deal.dealScore. 0-100."),
+    deal_grade: z
+        .string()
+        .max(2)
+        .optional()
+        .describe("From analyze_deal.dealGrade. A/B/C/D/F."),
 });
 
 export const createDealTool = tool({
@@ -85,13 +148,65 @@ export const createDealTool = tool({
     //   4. Only then call execute() with the validated input
     needsApproval: true,
 
-    execute: async ({ address, name, notes, investment_strategy }) => {
+    execute: async ({
+        address,
+        name,
+        notes,
+        investment_strategy,
+        property_image_url,
+        arv_estimate,
+        arv_high,
+        mao,
+        estimated_repairs,
+        profit_spread,
+        deal_score,
+        deal_grade,
+    }) => {
         // Build the request body. Only include optional fields if set —
         // mirrors how dealwave-client handles undefined fields elsewhere.
         const body: Record<string, unknown> = { address };
         if (name) body.name = name;
         if (notes) body.notes = notes;
         if (investment_strategy) body.investment_strategy = investment_strategy;
+        if (property_image_url) body.property_image_url = property_image_url;
+
+        // Construct the speed_check JSONB blob with the exact key shape the
+        // DealWave dashboard reads (snake_case, see deal-card-metrics.ts in
+        // the dealwave repo):
+        //   - sc.arv_estimate / sc.arv_high → My Deals card "ARV"
+        //   - sc.mao / sc.assignedPrice     → My Deals card "Purchase"
+        //   - sc.profit_spread              → My Deals card "Spread"
+        //   - sc.manualComps                → required by deal-detail page
+        //                                     (null deref crash otherwise)
+        const hasEnrichment =
+            arv_estimate !== undefined ||
+            arv_high !== undefined ||
+            mao !== undefined ||
+            estimated_repairs !== undefined ||
+            profit_spread !== undefined ||
+            deal_score !== undefined;
+        if (hasEnrichment) {
+            const speedCheck: Record<string, unknown> = {
+                // Always present — prevents the dashboard's detail page from
+                // crashing on `deal.speed_check.manualComps ?? []`.
+                manualComps: [],
+            };
+            if (arv_estimate !== undefined) speedCheck.arv_estimate = arv_estimate;
+            if (arv_high !== undefined) speedCheck.arv_high = arv_high;
+            if (mao !== undefined) speedCheck.mao = mao;
+            if (estimated_repairs !== undefined)
+                speedCheck.estimated_repairs = estimated_repairs;
+            if (profit_spread !== undefined)
+                speedCheck.profit_spread = profit_spread;
+            if (deal_score !== undefined) speedCheck.deal_score = deal_score;
+            if (deal_grade !== undefined) speedCheck.deal_grade = deal_grade;
+            body.speed_check = speedCheck;
+        }
+
+        // Stamp the analysis timestamp so DealWave's "last analyzed at"
+        // surface stays current. The agent ran the analyze pipeline within
+        // the same conversation, so "now" is the truthful answer.
+        body.last_analyzed_at = new Date().toISOString();
 
         const result = await dealWaveFetch("/deals", {
             method: "POST",

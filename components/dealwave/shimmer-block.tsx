@@ -15,11 +15,11 @@
 //     keyframe to reinforce that something is actively happening server
 //     side — not a stalled request.
 //
-// WHY a sibling <style> block instead of Tailwind arbitrary values:
-// matches the dot-grid pattern in this folder (single-file ownership of
-// scoped CSS). The shimmer bars need a specific gradient + 1400px
-// background-size to make the sweep readable; expressing that purely in
-// Tailwind utilities would mean three arbitrary values per bar.
+// The shimmer bar visual lives as `.dw-shimmer-line` in app/globals.css —
+// a single global rule rather than a per-mount <style> tag. Inlining it
+// per render mutated the CSSOM each time the block mounted during
+// streaming and caused a small CLS bump; the global rule shares one
+// gradient + sweep across every shimmer instance.
 
 type ShimmerBlockProps = {
     // Override the "streaming" label. Useful for the narrow window
@@ -34,32 +34,22 @@ export function ShimmerBlock({
     className,
 }: ShimmerBlockProps) {
     return (
-        <>
-            {/* Scoped CSS — the .dw-shimmer-line class only exists in
-                this component's render tree. The animate-shimmer Tailwind
-                alias is registered in globals.css with the matching 1.8s
-                timing, but we set the gradient + size here because those
-                are too specific to live in the theme layer. */}
-            <style>{`
-                .dw-shimmer-line {
-                    height: 10px;
-                    border-radius: 3px;
-                    background-color: rgba(255, 255, 255, 0.04);
-                    background-image: linear-gradient(
-                        90deg,
-                        rgba(255, 255, 255, 0.04) 25%,
-                        rgba(255, 255, 255, 0.1) 50%,
-                        rgba(255, 255, 255, 0.04) 75%
-                    );
-                    background-size: 1400px 100%;
-                    animation: shimmer 1.8s infinite linear;
-                }
-            `}</style>
-            <div
-                className={`animate-fade-up flex flex-col gap-[9px] ${
-                    className ?? ""
-                }`}
-            >
+        // .dw-shimmer-line lives in app/globals.css. We deliberately do
+        // NOT inline a <style> tag here: every mount of ShimmerBlock
+        // during streaming would re-emit a style node and mutate the
+        // CSSOM, which can flicker layout in a way that registers as a
+        // tiny CLS bump on Lighthouse. The class is a global token now.
+        <div
+            className={`dw-shimmer-block animate-fade-up flex flex-col gap-[9px] ${
+                className ?? ""
+            }`}
+            // Reserve vertical space so when this block unmounts and the
+            // VerdictCard takes its place, the page does NOT contract
+            // first and then re-expand (that round-trip is a CLS source).
+            // 86px = 4 × 10px shimmer line + 3 × 9px gap + ~17px label
+            // row — within a few px of the typical VerdictCard banner.
+            style={{ minHeight: 86 }}
+        >
                 {/* Four bars, varied widths. The widths approximate the
                     rhythm of a real paragraph (long, medium, longest,
                     short) so the loading state previews the shape of the
@@ -113,7 +103,6 @@ export function ShimmerBlock({
                         {label}
                     </span>
                 </div>
-            </div>
-        </>
+        </div>
     );
 }

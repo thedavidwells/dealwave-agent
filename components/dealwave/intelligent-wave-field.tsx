@@ -524,17 +524,36 @@ export function IntelligentWaveField() {
             redrawForMode();
         });
 
+        // Pause the rAF loop when the tab is hidden. Chrome throttles
+        // backgrounded rAF aggressively, but Safari is much less strict —
+        // a long-backgrounded tab can sit at 5-10% CPU just animating
+        // wave nodes nobody is looking at. cancelFrame here, then resume
+        // on next visible event (skipping when reduceMotion is on since
+        // there's no loop running anyway).
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                cancelFrame();
+            } else if (!reduceMotion) {
+                render();
+            }
+        };
+
         resizeObserver.observe(parent);
         // §3: pointermove + pointerleave listeners removed. Re-add only
         // if we ever surface the field as a foreground element rather
         // than backdrop chrome.
         mediaQuery.addEventListener("change", handleMediaQueryChange);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
 
         redrawForMode();
 
         return () => {
             resizeObserver.disconnect();
             mediaQuery.removeEventListener("change", handleMediaQueryChange);
+            document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange,
+            );
             cancelFrame();
         };
     }, []);

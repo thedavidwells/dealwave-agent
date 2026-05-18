@@ -52,6 +52,9 @@ import { VerdictCard, type Verdict } from "@/components/dealwave/verdict-card";
 import {
     ModelSelectorBar,
     useModelSelection,
+    type AdvisorModel,
+    type BackupProvider,
+    type ResearchModel,
 } from "@/components/dealwave/model-selector";
 import { DWLogo } from "@/components/dealwave/dw-logo";
 import EvalBadge from "@/components/dealwave/eval-badge";
@@ -60,6 +63,10 @@ import GatewayBar from "@/components/dealwave/gateway-bar";
 import { ToolPillStrip } from "@/components/dealwave/tool-pill";
 import { ApprovalPrompt } from "@/components/dealwave/approval-prompt";
 import { ShimmerBlock } from "@/components/dealwave/shimmer-block";
+import {
+    WhatIfHistogram,
+    isRunWhatIfOutput,
+} from "@/components/dealwave/what-if-histogram";
 
 // Suggestion chips shown in the empty state. SFR-investor friendly —
 // intentionally not the commercial multi-family examples from the design
@@ -214,6 +221,12 @@ export default function Home() {
                     }
                     researchModel={models.research}
                     advisorModel={models.advisor}
+                    backupProvider={models.backup}
+                    onResearchChange={(research) =>
+                        updateModels({ research })
+                    }
+                    onAdvisorChange={(advisor) => updateModels({ advisor })}
+                    onBackupChange={(backup) => updateModels({ backup })}
                 />
             ) : (
                 <ChatStream
@@ -291,10 +304,18 @@ function EmptyState({
     onSubmit,
     researchModel,
     advisorModel,
+    backupProvider,
+    onResearchChange,
+    onAdvisorChange,
+    onBackupChange,
 }: {
     onSubmit: (text: string) => void;
-    researchModel: string;
-    advisorModel: string;
+    researchModel: ResearchModel;
+    advisorModel: AdvisorModel;
+    backupProvider: BackupProvider;
+    onResearchChange: (model: ResearchModel) => void;
+    onAdvisorChange: (model: AdvisorModel) => void;
+    onBackupChange: (provider: BackupProvider) => void;
 }) {
     const [text, setText] = useState("");
 
@@ -451,9 +472,10 @@ function EmptyState({
                 <GatewayBar
                     researchModel={researchModel}
                     advisorModel={advisorModel}
-                    evalPassing={3}
-                    evalTotal={3}
-                    toolCount={4}
+                    backupProvider={backupProvider}
+                    onResearchChange={onResearchChange}
+                    onAdvisorChange={onAdvisorChange}
+                    onBackupChange={onBackupChange}
                 />
             </div>
         </div>
@@ -604,8 +626,33 @@ function ChatStream({
                                         );
                                     }
 
-                                    // Tool parts are rendered as the strip
-                                    // above; skip them in the inline pass.
+                                    // run_what_if is the one tool whose
+                                    // output deserves a full inline render —
+                                    // the histogram is the demo's visual
+                                    // moment. Every other tool stays compact
+                                    // in the ToolPillStrip above.
+                                    if (
+                                        isToolUIPart(part) &&
+                                        part.type === "tool-run_what_if" &&
+                                        "state" in part &&
+                                        part.state === "output-available"
+                                    ) {
+                                        const output = (
+                                            part as { output?: unknown }
+                                        ).output;
+                                        if (isRunWhatIfOutput(output)) {
+                                            return (
+                                                <WhatIfHistogram
+                                                    key={i}
+                                                    output={output}
+                                                />
+                                            );
+                                        }
+                                        return null;
+                                    }
+
+                                    // Other tool parts are rendered as the
+                                    // strip above; skip them in the inline pass.
                                     if (isToolUIPart(part)) {
                                         return null;
                                     }

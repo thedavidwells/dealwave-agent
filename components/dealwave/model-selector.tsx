@@ -199,6 +199,12 @@ export function ModelSelectorBar({
                     // The backup dropdown shows raw values (none/bedrock/vertex)
                     // since there's no provider prefix to strip.
                     displayRaw
+                    // Backup values are short ("none" / "bedrock" / "vertex"),
+                    // so the default 220px pill leaves a giant void. 144px
+                    // reserves enough room for the longest ("bedrock") +
+                    // the BACKUP label + chevron without any contraction
+                    // on swap. Scales with the 12px chip text bump.
+                    minWidth={144}
                 />
             </div>
         </TooltipProvider>
@@ -212,6 +218,7 @@ function ModelSelect({
     options,
     onValueChange,
     displayRaw,
+    minWidth = 220,
 }: {
     label: string;
     tooltip: string;
@@ -219,6 +226,12 @@ function ModelSelect({
     options: readonly string[];
     onValueChange: (value: string) => void;
     displayRaw?: boolean;
+    // Pixel min-width that reserves enough room for the longest option
+    // label + role prefix + chevron. Without this the pill contracts when
+    // the user picks a shorter model (e.g. gpt-4o after claude-sonnet-4-6),
+    // which is a CLS regression every time the dropdown opens. Default
+    // 220px is calibrated against the 12px chip text + label + chevron.
+    minWidth?: number;
 }) {
     // Layout: <Select> stays the outermost wrapper because it's a Radix
     // context provider (not a DOM node). The Tooltip sits INSIDE the
@@ -238,13 +251,14 @@ function ModelSelect({
                 <TooltipTrigger asChild>
                     <SelectTrigger
                         size="sm"
-                        className="h-7 gap-1.5 rounded-full border bg-[var(--dw-surface-1)] border-[var(--dw-border)] px-3 text-[11px] font-normal text-[var(--dw-sub)] uppercase tracking-wide transition-colors hover:border-[var(--dw-border-md)] focus-visible:ring-0 focus-visible:border-[var(--dw-border-str)]"
+                        className="!h-8 gap-2 rounded-full border bg-[var(--dw-surface-1)] border-[var(--dw-border)] px-3.5 text-[12px] font-normal text-[var(--dw-sub)] uppercase tracking-wide transition-colors hover:border-[var(--dw-border-md)] focus-visible:ring-0 focus-visible:border-[var(--dw-border-str)] [&_svg]:!size-3 [&_svg]:opacity-60"
+                        style={{ minWidth }}
                         aria-label={`${label} model`}
                     >
-                        <span className="text-[var(--dw-muted)]">
+                        <span className="text-[11px] text-[var(--dw-muted)]">
                             {label}
                         </span>
-                        <span className="text-[var(--dw-text)] normal-case tracking-normal font-medium">
+                        <span className="text-[12px] text-[var(--dw-text)] normal-case tracking-normal font-medium">
                             <SelectValue>
                                 {displayRaw ? value : shortLabel(value)}
                             </SelectValue>

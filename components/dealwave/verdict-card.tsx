@@ -577,15 +577,11 @@ export function VerdictCard({
                 )}
             </div>
 
-            {/* Mobile responsive override — clamp the metric grid to 2
-                columns below 640px so values stay readable on phones. */}
-            <style jsx>{`
-                @media (max-width: 640px) {
-                    .dw-metric-grid {
-                        grid-template-columns: repeat(2, 1fr) !important;
-                    }
-                }
-            `}</style>
+            {/* Mobile responsive override lives in app/globals.css as a
+                top-level media query on .dw-metric-grid — clamps the grid
+                to 2 columns under 640px. Hoisted out of <style jsx> so
+                the rule is parsed once at app load instead of on every
+                VerdictCard mount during streaming. */}
         </div>
     );
 }

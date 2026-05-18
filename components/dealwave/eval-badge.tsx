@@ -54,16 +54,19 @@ export default function EvalBadge() {
                     via the tooltip primitive.
                 */}
                 <span
-                    className="inline-flex cursor-default items-center gap-1.5 rounded-[4px] border border-[rgba(34,197,94,0.2)] bg-[rgba(34,197,94,0.07)] px-2.5 py-1 text-[12px] font-medium text-[var(--dw-green)]"
+                    className="inline-flex h-[26px] cursor-default items-center gap-1.5 rounded-[4px] border border-[rgba(34,197,94,0.25)] bg-[rgba(34,197,94,0.08)] px-2.5 text-[12px] font-medium text-[var(--dw-green)] tabular-nums"
                     aria-label={`Eval suite: ${passing} of ${total} cases passing`}
                 >
                     {/* 6px circular status dot — same green family as the
-                        border so it reads as a single token. */}
+                        border so it reads as a single token. The dot +
+                        green pill + numeric ratio is enough signal; the
+                        earlier "passing ✓" wording was redundant with the
+                        dot and the color. */}
                     <span
                         className="inline-block rounded-full bg-[var(--dw-green)]"
                         style={{ width: 6, height: 6 }}
                     />
-                    eval: passing ✓
+                    {passing}/{total} evals
                 </span>
             </TooltipTrigger>
             {/*
@@ -79,65 +82,43 @@ export default function EvalBadge() {
                 dismissing.
             */}
             <TooltipContent
+                side="bottom"
+                align="end"
                 sideOffset={10}
-                className="w-[280px] rounded-lg border border-[rgba(255,255,255,0.2)] bg-[var(--dw-surface-3)] p-4 text-[var(--dw-text)] shadow-[0_16px_48px_rgba(0,0,0,0.75)]"
+                collisionPadding={16}
+                className="w-[320px] max-w-[calc(100vw-2rem)] rounded-lg p-4 shadow-[0_16px_48px_rgba(0,0,0,0.75)]"
             >
-                {/* Header label — uppercase micro-caps frame the card */}
-                <div
-                    className="mb-[10px] text-[11px] uppercase text-[var(--dw-dim)]"
-                    style={{ letterSpacing: "1.2em" }}
-                >
-                    Last Eval Run
+                {/* Single-column layout. The header is one inline
+                    sentence — big green count + "cases passing" — that
+                    sits ABOVE the divider with the case list below it.
+                    Earlier versions had the count on its own row with
+                    "cases passing" as a side subtitle, which read as a
+                    two-column header even though the cases list below
+                    was single-column. Folding them into one line
+                    eliminates that visual mixed-mode. */}
+                <div className="mb-3 border-b border-[var(--dw-border)] pb-3 text-[15px] font-medium leading-snug text-[var(--dw-green)]">
+                    <span className="text-[18px] font-bold tabular-nums">
+                        {passing}/{total}
+                    </span>{" "}
+                    cases passing
                 </div>
 
-                {/* Big stat. Baseline alignment so the descender of the
-                    "cases passed" text sits on the same line as the big
-                    numerals — otherwise the smaller text floats. */}
-                <div className="mb-3 flex items-baseline gap-2">
-                    <span className="text-[26px] font-bold leading-none text-[var(--dw-green)]">
-                        {passing} / {total}
-                    </span>
-                    <span
-                        className="text-[12px] font-normal leading-none text-[var(--dw-green)]"
-                        style={{ opacity: 0.65 }}
-                    >
-                        cases passed
-                    </span>
-                </div>
-
-                {/* Per-case list. Each row stacks id over description with
-                    a green ✓ glyph aligned to the top of the id baseline. */}
-                <div className="flex flex-col gap-1.5">
+                {/* Per-case list. Each row stacks the case id (green
+                    Geist Mono) as its own header with the description in
+                    dim sans below. No ✓ column — the green stat already
+                    says "everything passes". */}
+                <ul className="flex flex-col gap-2.5">
                     {cases.map((c) => (
-                        <div key={c.id} className="flex items-start gap-2">
-                            {/* `leading-none` plus a small top pad keeps
-                                the ✓ visually aligned with the id text
-                                regardless of the description's wrap. */}
-                            <span
-                                className="pt-[2px] text-[11px] leading-none"
-                                style={{ color: "var(--dw-green)" }}
-                                aria-hidden
-                            >
-                                ✓
+                        <li key={c.id} className="flex flex-col gap-1">
+                            <code className="font-mono text-[12px] font-medium leading-none text-[var(--dw-green)]">
+                                {c.id}
+                            </code>
+                            <span className="line-clamp-2 text-[11px] leading-snug text-[var(--dw-sub)]">
+                                {c.description}
                             </span>
-                            <div className="min-w-0 flex-1">
-                                <div className="text-[13px] text-[var(--dw-text)]">
-                                    {c.id}
-                                </div>
-                                <div className="line-clamp-2 text-[11px] text-[var(--dw-sub)]">
-                                    {c.description}
-                                </div>
-                            </div>
-                        </div>
+                        </li>
                     ))}
-                </div>
-
-                {/* Footer with run instructions. Uses Geist Mono for the
-                    command so it visually reads as something the user
-                    types into a terminal. */}
-                <div className="mt-[10px] border-t border-[var(--dw-border)] pt-[10px] text-[11px] text-[var(--dw-dim)]">
-                    Run with <code className="font-mono">pnpm eval</code>
-                </div>
+                </ul>
             </TooltipContent>
         </Tooltip>
     );

@@ -127,6 +127,7 @@
   --dw-red:        #ef4444;
   --dw-blue:       #60a5fa;
   --dw-amber:      #f59e0b;
+  --dw-purple:     #a78bfa;
 
   /* shadcn token mapping. We bind the palette to the design tokens
    * so existing shadcn primitives (Card, Badge, Button, etc.) inherit
@@ -199,4 +200,34 @@
   ::-webkit-scrollbar       { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
+
+  /* Shimmer bar treatment used by <ShimmerBlock>. Hoisted out of the
+   * component's inline <style> tag so the CSSOM isn't re-mutated each
+   * time the block mounts/unmounts during streaming, and so multiple
+   * concurrent shimmers share a single rule. The 1400px sweep + alpha
+   * stops match the design-handoff spec. */
+  .dw-shimmer-line {
+    height: 10px;
+    border-radius: 3px;
+    background-color: rgba(255, 255, 255, 0.04);
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.04) 25%,
+      rgba(255, 255, 255, 0.1) 50%,
+      rgba(255, 255, 255, 0.04) 75%
+    );
+    background-size: 1400px 100%;
+    animation: shimmer 1.8s infinite linear;
+  }
+
+  /* VerdictCard metric grid mobile clamp. Hoisted out of the component's
+   * <style jsx> block so the rule is parsed once at app load instead of
+   * being emitted (and reparsed) on every VerdictCard mount during
+   * streaming. The 5-column desktop grid is set inline via gridTemplateColumns
+   * in the component; this override only fires below 640px. */
+  @media (max-width: 640px) {
+    .dw-metric-grid {
+      grid-template-columns: repeat(2, 1fr) !important;
+    }
+  }
 }

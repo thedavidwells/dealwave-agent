@@ -10,6 +10,7 @@ import { analyzeDealTool } from "@/lib/tools/analyze-deal";
 import { pullCompsTool } from "@/lib/tools/pull-comps";
 import { createDealTool } from "@/lib/tools/create-deal";
 import { listDealsTool } from "@/lib/tools/list-deals";
+import { runWhatIfTool } from "@/lib/tools/run-what-if";
 import { VerdictSchema } from "@/lib/schemas/verdict";
 
 // Disable Next.js's default response caching for this route
@@ -210,6 +211,20 @@ export async function POST(request: Request) {
                     so the user has context when they revisit), investment_strategy
                     matching the verdict's recommendedStrategy.
 
+                    ALSO pass through enrichment fields from analyze_deal so the user's
+                    My Deals dashboard shows real numbers (not $0) and the detail page
+                    doesn't crash. Map analyze_deal output to create_deal input:
+                      property_image_url  ← analyze_deal.imageUrl OR propertyDetails.imageUrl
+                      arv_estimate        ← analyze_deal.arvEstimate
+                      arv_high            ← analyze_deal.arvHigh
+                      mao                 ← analyze_deal.mao
+                      estimated_repairs   ← analyze_deal.estimatedRepairs
+                      profit_spread       ← analyze_deal.estimatedProfit
+                      deal_score          ← analyze_deal.dealScore
+                      deal_grade          ← analyze_deal.dealGrade
+                    Pass only the fields the analyze_deal result actually returned;
+                    omit any that were undefined.
+
                     When create_deal succeeds, the tool result contains a 'deal' object
                     with an 'id' field (e.g. deal.id = "abc-123"). Your confirmation
                     text MUST include a markdown link to the deal's detail page using
@@ -222,6 +237,26 @@ export async function POST(request: Request) {
 
                     If the user clicks Skip in the approval card OR explicitly declines
                     in text, acknowledge briefly and offer to help with the next analysis.
+
+                    RUN_WHAT_IF — call this AFTER analyze_deal when the user wants to
+                    understand the *risk* or *variance* of a deal, not just the point
+                    estimate. Trigger phrases: "how risky is this deal?", "what's the
+                    downside?", "what if repairs come in higher?", "sensitivity
+                    analysis", "monte carlo", "stress test", "show me the distribution".
+                    The baseline values (arv, purchase_price, repairs) MUST come from
+                    the most recent analyze_deal result for this address — never
+                    invent them. Map analyze_deal fields to the tool's baseline:
+                      arv             ← analyze_deal.arvEstimate
+                      purchase_price  ← analyze_deal.listingPrice (if present) else mao
+                      repairs         ← analyze_deal.estimatedRepairs
+                    Default holding_months to 4 unless the analysis indicated otherwise.
+
+                    After run_what_if returns, in your response: (1) state the P50
+                    (median) profit and probability of loss in plain English, (2)
+                    reference the 95% Value-at-Risk as the worst-case to plan around,
+                    (3) if probability of loss > 20%, surface that as a major risk.
+                    DO NOT include the histogram_png_base64 string in your text
+                    response — the UI renders it separately.
 
                     PIPELINE QUERIES — call list_deals ONLY when the user asks about
                     their existing saved deals, pipeline, or deal history. Trigger
@@ -252,10 +287,13 @@ export async function POST(request: Request) {
                     pull_comps: pullCompsTool,
                     create_deal: createDealTool,
                     list_deals: listDealsTool,
+                    run_what_if: runWhatIfTool,
                 },
 
-                // Stop after 8 steps. This helps manage cost and prevents infinite loops if the model gets confused. Adjust as needed.
-                stopWhen: stepCountIs(8),
+                // Stop after 10 steps. Bumped from 8 to leave headroom for
+                // chained flows like "analyze → comps → run_what_if → save"
+                // where the model may need an extra step for narration.
+                stopWhen: stepCountIs(10),
 
                 // Per-step telemetry. Logs which research model handled
                 // each step and how many tokens it consumed — useful for
