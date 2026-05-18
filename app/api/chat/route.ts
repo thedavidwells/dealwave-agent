@@ -409,6 +409,16 @@ export async function POST(request: Request) {
                             If pull_comps wasn't called, set dataConfidence based on analyze_deal's
                             confidenceScore alone.
 
+                            FOLLOW-UPS — always include a "Run a Monte Carlo on this deal" chip
+                            when the analyze_deal result has arvEstimate, estimatedRepairs, and
+                            either mao or listingPrice (i.e., the baseline numbers exist to seed
+                            a simulation). Phrase it short: "Run Monte Carlo" or "Stress-test the
+                            numbers" or "Show downside scenarios". This routes to the run_what_if
+                            Sandbox tool — surface it as a follow-up especially when dataConfidence
+                            is medium/low or when any severity-4+ risk flag exists, because that's
+                            exactly where variance matters most. Also include "Save to pipeline"
+                            for strong-deal / good-deal verdicts.
+
                             Pick the recommendedStrategy that maximizes this deal's economics:
                             - wholesale: wide spread, light repairs
                             - flip: strong ARV, repair scope justified by profit

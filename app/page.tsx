@@ -14,7 +14,7 @@
 // streaming, and renders interactively. Without it, this is a server
 // component and the hook would crash at build time.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
     isToolUIPart,
@@ -22,7 +22,7 @@ import {
     lastAssistantMessageIsCompleteWithToolCalls,
     lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
-import { PlusIcon } from "lucide-react";
+import { PlusIcon, Zap } from "lucide-react";
 
 // AI Elements — we keep PromptInput (handles the textarea/submit ergonomics
 // nicely) and Conversation (sticky-to-bottom scroll behavior). The Tool family
@@ -57,7 +57,6 @@ import {
     type ResearchModel,
 } from "@/components/dealwave/model-selector";
 import { DWLogo } from "@/components/dealwave/dw-logo";
-import EvalBadge from "@/components/dealwave/eval-badge";
 import { IntelligentWaveField } from "@/components/dealwave/intelligent-wave-field";
 import GatewayBar from "@/components/dealwave/gateway-bar";
 import { ToolPillStrip } from "@/components/dealwave/tool-pill";
@@ -67,6 +66,7 @@ import {
     WhatIfHistogram,
     isRunWhatIfOutput,
 } from "@/components/dealwave/what-if-histogram";
+import { PrimitivesInspector } from "@/components/dealwave/primitives-inspector";
 
 // Suggestion chips shown in the empty state. SFR-investor friendly —
 // intentionally not the commercial multi-family examples from the design
@@ -114,6 +114,23 @@ export default function Home() {
         null,
     );
 
+    // PrimitivesInspector visibility — right-side drawer cataloging every
+    // Vercel AI primitive in use, with live activation indicators. Persisted
+    // in localStorage so the user's preference survives reloads, defaults
+    // closed on first visit. Hydrated from localStorage post-mount to avoid
+    // SSR/CSR mismatch.
+    const [inspectorOpen, setInspectorOpen] = useState(false);
+    useEffect(() => {
+        const stored = window.localStorage.getItem("dw:inspector-open");
+        if (stored === "1") setInspectorOpen(true);
+    }, []);
+    useEffect(() => {
+        window.localStorage.setItem(
+            "dw:inspector-open",
+            inspectorOpen ? "1" : "0",
+        );
+    }, [inspectorOpen]);
+
     // PromptInput hands us a parsed message + the raw event on submit.
     // PromptInputMessage = { text: string; files: FileUIPart[] }
     const handleSubmit: PromptInputProps["onSubmit"] = (message, e) => {
@@ -155,23 +172,52 @@ export default function Home() {
                 </div>
 
                 <div className="flex items-center" style={{ gap: 8 }}>
-                    {/* AI Gateway pill — static label, surfaces the routing
-                        story at a glance. Real model swap happens via the
-                        ModelSelectorBar below the input. */}
-                    <span
+                    {/* AI Primitives toggle — replaces the old static AI
+                        Gateway pill + EvalBadge. Opens the right-side
+                        PrimitivesInspector drawer which shows every Vercel
+                        primitive in use plus live activation indicators.
+                        That drawer is the demo's "explain my architecture"
+                        surface — Ale (and future viewers) can see what
+                        primitive is firing as the agent runs. */}
+                    <button
+                        type="button"
+                        onClick={() => setInspectorOpen((v) => !v)}
+                        aria-pressed={inspectorOpen}
+                        aria-label="Toggle AI Primitives inspector"
+                        className="flex items-center transition-colors"
                         style={{
-                            padding: "4px 10px",
-                            background: "var(--dw-surface-1)",
+                            gap: 6,
+                            padding: "5px 11px",
+                            background: inspectorOpen
+                                ? "var(--dw-surface-1)"
+                                : "transparent",
                             border: "1px solid var(--dw-border)",
                             borderRadius: 4,
-                            fontSize: 12,
-                            color: "var(--dw-sub)",
+                            fontSize: 13,
+                            color: inspectorOpen
+                                ? "var(--dw-text)"
+                                : "var(--dw-sub)",
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.borderColor =
+                                "var(--dw-border-md)";
+                            e.currentTarget.style.color = "var(--dw-text)";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.borderColor =
+                                "var(--dw-border)";
+                            e.currentTarget.style.color = inspectorOpen
+                                ? "var(--dw-text)"
+                                : "var(--dw-sub)";
                         }}
                     >
-                        AI Gateway
-                    </span>
-
-                    <EvalBadge />
+                        <Zap
+                            size={13}
+                            className="text-amber-400"
+                            aria-hidden="true"
+                        />
+                        AI Primitives
+                    </button>
 
                     {/* "+ New analysis" — visible only mid-conversation.
                         Wipes the in-memory message list via setMessages so
@@ -290,6 +336,17 @@ export default function Home() {
                     </div>
                 </div>
             )}
+
+            {/* AI Primitives inspector — right-side slide-out drawer.
+                Fixed-positioned so it sits above the chat surface; only
+                visible when inspectorOpen is true. Receives messages so
+                its activation indicators reflect what's actually run in
+                the current session. */}
+            <PrimitivesInspector
+                open={inspectorOpen}
+                onClose={() => setInspectorOpen(false)}
+                messages={messages}
+            />
         </div>
     );
 }

@@ -346,6 +346,43 @@ const linkSafety = {
   },
 };
 
+// Override Streamdown's default <a> rendering so internal links
+// (e.g. /deals/abc) open in a NEW TAB instead of replacing the chat
+// session via same-tab navigation. useChat state lives in memory only;
+// once the user navigates away, going Back returns to an empty
+// conversation. Opening internal links in a new tab preserves the
+// active chat indefinitely while the user inspects the saved deal.
+//
+// rel="noopener noreferrer" is mandatory whenever target="_blank":
+// without it, the opened tab gets a window.opener reference back to
+// the analyst tab, which is a tabnabbing vector.
+const streamdownComponents = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  a: ({ href, children, ...rest }: any) => {
+    const isInternal =
+      typeof href === "string" &&
+      href.startsWith("/") &&
+      !href.startsWith("//");
+    if (isInternal) {
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          {...rest}
+        >
+          {children}
+        </a>
+      );
+    }
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    );
+  },
+};
+
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
@@ -355,6 +392,7 @@ export const MessageResponse = memo(
       )}
       plugins={streamdownPlugins}
       linkSafety={linkSafety}
+      components={streamdownComponents}
       {...props}
     />
   ),
