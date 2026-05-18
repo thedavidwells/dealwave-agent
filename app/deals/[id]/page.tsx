@@ -1,41 +1,105 @@
 // app/deals/[id]/page.tsx
 //
 // Deal detail page — the destination of every "View this deal →" link
-// emitted by the agent (create_deal success + saved-deal table listings).
-// Server component so we get ISR for free; deals don't change often once
-// saved, and a 60s revalidation keeps the render fresh enough for the
-// "I just clicked through from chat" case without hammering the API on
-// every navigation.
+// emitted by the agent. Server Component for two reasons:
+//   1. ISR — `revalidate = 60` caches the rendered HTML for a minute so
+//      navigating between chat and detail feels instantaneous.
+//   2. Streaming via Suspense — the comps section fetches from a separate
+//      DealWave endpoint at render time, wrapped in <Suspense> so the
+//      static shell + cached deal data render IMMEDIATELY while the comps
+//      stream in. This is the "rendering strategies" demo: ISR for the
+//      cacheable deal record, Suspense streaming for the fresher data
+//      that benefits from being re-fetched on each navigation.
 //
-// Rendering only — no edit/delete actions yet. The agent is still the
-// primary mutation surface (research + advisor pipeline); this page is
-// the "look at what I saved" view that closes the loop.
+// Design fidelity: matches the Property Detail View handoff prototype.
+// Visual tokens (#0a0a0a bg, #111 surface, rgba(255,255,255,0.08) borders,
+// Geist font stack) are inlined here rather than relying on Tailwind so
+// the styling is self-contained against the prototype's specs.
 
 import Image from "next/image";
 import Link from "next/link";
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { dealWaveFetch } from "@/lib/dealwave-client";
+import { AnalysisAccordion } from "@/components/dealwave/analysis-accordion";
+import { CompsTable, CompsTableSkeleton } from "@/components/dealwave/comps-table";
+import { MonteCarloPanel } from "@/components/dealwave/monte-carlo-panel";
 
 // ISR — rebuild this page in the background at most once per 60 seconds.
-// Saved deals are mostly read-mostly objects (pipeline_status nudges
-// happen rarely), so a minute of staleness is well inside what feels
-// "live" to a user clicking through from a chat link.
+// Saved deals are mostly read-mostly objects; a minute of staleness is
+// well inside what feels "live" to a user clicking through from chat.
+//
+// (Previously this used `'use cache: remote'` + cacheTag + cacheLife
+// under cacheComponents. Reverted to the classic revalidate export when
+// we rolled cacheComponents back — same effective behavior, fewer
+// constraints, no migration cost.)
 export const revalidate = 60;
 
-// Local, deliberately-loose shape. The DealWave API is loosely typed at
-// the edge and we don't want this page to break the moment a new field
-// appears server-side. Only `id` and `address` are required for the
-// page to render at all — every other tile is conditional.
+// Design tokens — kept inline so this page renders correctly even if
+// global CSS hasn't loaded yet (e.g. during the static shell phase of
+// streaming). Match the Property Detail View prototype 1:1.
+const C = {
+    bg: "#0a0a0a",
+    sf: "#111111",
+    sf2: "#161616",
+    bd: "rgba(255,255,255,0.08)",
+    bdMd: "rgba(255,255,255,0.13)",
+    text: "#fafafa",
+    sub: "rgba(255,255,255,0.55)",
+    dim: "rgba(255,255,255,0.28)",
+    font: '"Geist", -apple-system, BlinkMacSystemFont, sans-serif',
+    mono: '"Geist Mono", monospace',
+    green: "#22c55e",
+    red: "#ef4444",
+    amber: "#f59e0b",
+    blue: "#60a5fa",
+} as const;
+
+// ─── Data types ─────────────────────────────────────────────────────────
+
+// What the DealWave API returns. Loose shape because the agent populates
+// these incrementally — newer deals have richer speed_check JSONB.
+interface SpeedCheck {
+    arv_estimate?: number | null;
+    arv_high?: number | null;
+    arv_low?: number | null;
+    mao?: number | null;
+    estimated_repairs?: number | null;
+    profit_spread?: number | null;
+    deal_score?: number | null;
+    deal_grade?: string | null;
+    beds?: number | null;
+    baths?: number | null;
+    sqft?: number | null;
+    year_built?: number | null;
+    property_type?: string | null;
+    lot_size?: number | null;
+    confidence_score?: number | null;
+    risk_flags?: Array<{ severity: number; message: string }> | null;
+    monte_carlo?: {
+        p10: number;
+        p50: number;
+        p90: number;
+        probability_of_loss: number;
+        value_at_risk_95: number;
+        trials: number;
+        histogram_png_base64?: string;
+        interpretation?: string;
+    } | null;
+}
+
 interface DealRecord {
     id: string;
     address: string;
     name?: string | null;
     notes?: string | null;
-    deal_score?: number | null;
-    deal_grade?: "A" | "B" | "C" | "D" | "F" | null;
+    // DealWave's curated v1 GET response exposes `deal_score_int` (typed
+    // column on unified_deals). The grade is NOT a typed column — it lives
+    // in speed_check.deal_grade. Until the DealWave PR exposes speed_check
+    // in the GET response, we read score from the typed column and accept
+    // grade missing.
+    deal_score_int?: number | null;
     investment_strategy?:
         | "wholesale"
         | "flip"
@@ -47,252 +111,607 @@ interface DealRecord {
     status?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
-    // Public Supabase Storage URL — populated as a side-effect of the
-    // analyze pipeline. Older deals (saved before the pipeline started
-    // capturing photos) or in-flight saves will have this as null; the
-    // page renders without the hero in that case rather than showing a
-    // broken or placeholder image.
     property_image_url?: string | null;
+    // speed_check is currently filtered from the v1 API's curated GET
+    // response (see DealResponseSchema in dealwave/api-deals.schema.ts).
+    // Optional here in anticipation of the in-flight PR that exposes it.
+    // Until that ships, this will always be undefined and the detail page
+    // gracefully renders "—" for fields it can't find.
+    speed_check?: SpeedCheck | null;
 }
 
-// Human-readable strategy label. The API stores snake_case enums
-// (`buy_and_hold`); the UI wants Title Case with spaces. Kept local
-// because this transform is only meaningful in the rendering layer —
-// upstream tools should keep working with the enum value.
-function formatStrategy(strategy: string): string {
-    return strategy
+// ─── Formatters ────────────────────────────────────────────────────────
+
+function formatStrategy(s: string): string {
+    return s
         .split("_")
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
         .join(" ");
 }
 
-// Date formatter shared across the footer row. Using `medium` keeps the
-// output unambiguous ("May 17, 2026") without dragging in the time, which
-// would just be noise for a saved-deal record.
-const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
-
-function formatDate(value: string | null | undefined): string | null {
-    if (!value) return null;
-    const date = new Date(value);
-    // Guard against malformed timestamps coming back from the API —
-    // better to omit the footer field than render "Invalid Date".
-    if (Number.isNaN(date.getTime())) return null;
-    return DATE_FORMATTER.format(date);
+function formatUSD(n: number | null | undefined): string {
+    if (n == null) return "—";
+    return `$${Math.round(n).toLocaleString()}`;
 }
 
-// Tile color logic for the deal grade. Mirrors the health-color
-// convention in the advisor's VerdictCard so the visual language stays
-// consistent between the in-chat verdict and the saved-deal page.
-const GRADE_STYLES: Record<NonNullable<DealRecord["deal_grade"]>, string> = {
-    A: "bg-green-500/10 text-green-700 border-green-500/30",
-    B: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30",
-    C: "bg-amber-500/10 text-amber-700 border-amber-500/30",
-    D: "bg-orange-500/10 text-orange-700 border-orange-500/30",
-    F: "bg-red-500/10 text-red-700 border-red-500/30",
-};
+function gradeLabel(g?: string | null): string {
+    if (!g) return "Grade —";
+    return `Grade ${g}`;
+}
 
-// Next 16 hands route params as a Promise. The async-params change was
-// the main breaking shift for App Router in this version — destructuring
-// the un-awaited object is now a type error and a runtime warning.
+// ─── Page ──────────────────────────────────────────────────────────────
+
 export default async function DealDetailPage({
     params,
 }: {
     params: Promise<{ id: string }>;
 }) {
     const { id } = await params;
-
-    // Fetch the deal. The client throws at import time if env is missing,
-    // so we don't need a try/catch around the call itself — a thrown
-    // error here would be a real bug, not a missing-config foot-gun.
     const result = await dealWaveFetch<DealRecord>(`/deals/${id}`);
-
-    // 404 covers both "not found" and any other API error — we don't want
-    // to leak status codes or error bodies to the user. The agent's link
-    // is the only sanctioned entrypoint, and if the deal isn't fetchable
-    // there's nothing useful to show.
-    if (!result.ok) {
-        notFound();
-    }
-
+    if (!result.ok) notFound();
     const deal = result.data;
-    const createdAt = formatDate(deal.created_at);
-    const updatedAt = formatDate(deal.updated_at);
+    const sc = deal.speed_check ?? {};
+
+    // Tease the verdict label from the deal_grade — design wants a
+    // recommendation pill ("Strong Buy", "Investigate", etc.). Map the
+    // grade to a recommendation string roughly equivalent to the agent's
+    // own recommendation enum. Grade lives in speed_check JSONB; falls
+    // back to "Pending" until the DealWave API exposes that field.
+    const recommendation = recommendationFromGrade(sc.deal_grade ?? null);
+
+    // Pull out the high-severity risk flag (if any) for the warning
+    // banner. Severity 4+ gets surfaced; lower-severity flags stay
+    // implicit so the banner doesn't shout when it shouldn't.
+    const topRisk = (sc.risk_flags ?? []).find((r) => r.severity >= 4);
 
     return (
-        <div className="flex min-h-screen flex-col bg-background">
-            {/* Header — mirrors the agent page so navigating between the
-                chat and the deal detail feels like one product, not two.
-                Sticky border-b matches the analyst page's chrome. The
-                back-link is right-aligned so the visual weight balances
-                across the header row. */}
-            <header className="sticky top-0 z-10 border-b bg-background px-6 py-4">
-                <div className="mx-auto flex max-w-3xl items-center justify-between gap-4">
-                    <div className="flex items-center gap-2">
-                        {/* DW square badge — solid primary tile with the
-                            "DW" mark. Compact enough to sit inline with
-                            the wordmark without dominating the header. */}
-                        <div className="flex size-7 items-center justify-center rounded-md bg-primary text-xs font-bold tracking-tight text-primary-foreground">
-                            DW
-                        </div>
-                        <h1 className="text-base font-semibold tracking-tight">
-                            DealWave Deal Analyst
-                        </h1>
-                    </div>
-                    <Link
-                        href="/"
-                        className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+        <div
+            style={{
+                width: "100vw",
+                minHeight: "100vh",
+                background: C.bg,
+            }}
+        >
+            {/* ─── Header ──────────────────────────────────────────── */}
+            <header
+                style={{
+                    padding: "11px 24px",
+                    borderBottom: `1px solid ${C.bd}`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                }}
+            >
+                <div
+                    style={{
+                        width: 28,
+                        height: 28,
+                        background: C.text,
+                        borderRadius: 4,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                    }}
+                >
+                    <span
+                        style={{
+                            fontFamily: C.font,
+                            fontSize: 11,
+                            color: "#000",
+                            fontWeight: 700,
+                        }}
                     >
-                        ← Back to analyst
-                    </Link>
+                        DW
+                    </span>
                 </div>
+                <span
+                    style={{
+                        fontFamily: C.font,
+                        fontSize: 15,
+                        color: "rgba(255,255,255,0.82)",
+                        fontWeight: 500,
+                    }}
+                >
+                    DealWave Agent
+                </span>
+                <Link
+                    href="/"
+                    style={{
+                        marginLeft: "auto",
+                        padding: "5px 11px",
+                        background: C.sf,
+                        border: `1px solid ${C.bd}`,
+                        borderRadius: 4,
+                        color: C.sub,
+                        fontFamily: C.font,
+                        fontSize: 12,
+                        textDecoration: "none",
+                    }}
+                >
+                    ← Back to chat
+                </Link>
             </header>
 
-            {/* Main column — same max-w-3xl as the analyst page so the
-                eye doesn't have to re-anchor when navigating between
-                chat and detail. */}
-            <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
-                {/* Property image hero — only when DealWave's analyze
-                    pipeline captured a photo. Lives ABOVE the title so
-                    the page reads "this is the property" before "here
-                    are its numbers".
-                    Implementation notes:
-                    - aspect-video locks the wrapper to 16:9 so the
-                      layout doesn't shift while the optimized image
-                      loads (avoids a CLS hit on Lighthouse).
-                    - fill + sizes lets next/image pick the right
-                      width-variant for the viewport rather than always
-                      serving the largest variant.
-                    - priority because this is above-the-fold on the
-                      page and we want the LCP candidate eager-loaded
-                      via <link rel="preload">.
-                    - rounded-lg + overflow-hidden so the image clips to
-                      the 8px corners shared by other dark-theme cards. */}
-                {deal.property_image_url && (
-                    <div className="relative mb-6 aspect-video w-full overflow-hidden rounded-lg border border-[var(--dw-border)] bg-[var(--dw-surface-1)]">
-                        <Image
-                            src={deal.property_image_url}
-                            alt={`Photo of ${deal.address}`}
-                            fill
-                            priority
-                            sizes="(max-width: 768px) 100vw, 720px"
-                            className="object-cover"
+            {/* ─── Hero Image ──────────────────────────────────────── */}
+            <div
+                style={{
+                    height: 360,
+                    background: deal.property_image_url
+                        ? "#000"
+                        : "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                    position: "relative",
+                    overflow: "hidden",
+                }}
+            >
+                {deal.property_image_url ? (
+                    <Image
+                        src={deal.property_image_url}
+                        alt={`Photo of ${deal.address}`}
+                        fill
+                        priority
+                        sizes="100vw"
+                        style={{ objectFit: "cover" }}
+                    />
+                ) : (
+                    <>
+                        {/* Subtle grid overlay — matches the design's
+                            "no image yet" placeholder style. Pure CSS,
+                            no <img> request. */}
+                        <div
+                            style={{
+                                position: "absolute",
+                                inset: 0,
+                                opacity: 0.4,
+                                backgroundImage:
+                                    "linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)",
+                                backgroundSize: "60px 60px",
+                            }}
                         />
-                    </div>
-                )}
-
-                {/* Title block. Address is the canonical identifier in
-                    the user's head ("the Burntwood Ct deal"), so it gets
-                    h1 weight; the optional `name` is a user-supplied
-                    alias and sits underneath as a subtitle. */}
-                <div className="mb-6">
-                    <h1 className="text-2xl font-semibold leading-tight tracking-tight">
-                        {deal.address}
-                    </h1>
-                    {deal.name && (
-                        <p className="mt-1 text-sm text-muted-foreground">
-                            {deal.name}
-                        </p>
-                    )}
-                </div>
-
-                {/* Metric strip — only the fields that exist render as
-                    tiles. We skip nulls rather than showing "N/A" so the
-                    page never looks half-empty for a freshly-saved deal
-                    that hasn't been graded yet. Layout flexes so it
-                    looks balanced with 1, 3, or 5 tiles. */}
-                <div className="mb-6 flex flex-wrap gap-2">
-                    {typeof deal.deal_score === "number" && (
-                        <Card size="sm" className="px-3 py-2">
-                            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Deal Score
-                            </div>
-                            <div className="mt-0.5 text-lg font-bold tabular-nums">
-                                {deal.deal_score}
-                                <span className="ml-0.5 text-xs font-normal text-muted-foreground">
-                                    /100
-                                </span>
-                            </div>
-                        </Card>
-                    )}
-
-                    {deal.deal_grade && (
-                        <Card size="sm" className="px-3 py-2">
-                            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Grade
+                        <div
+                            style={{
+                                position: "absolute",
+                                top: "50%",
+                                left: "50%",
+                                transform: "translate(-50%, -50%)",
+                                textAlign: "center",
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontFamily: C.font,
+                                    fontSize: 14,
+                                    color: C.dim,
+                                    marginBottom: 12,
+                                }}
+                            >
+                                📷 Property Image
                             </div>
                             <div
-                                className={`mt-0.5 inline-flex h-6 min-w-6 items-center justify-center rounded-md border px-1.5 text-sm font-bold ${GRADE_STYLES[deal.deal_grade]}`}
+                                style={{
+                                    fontFamily: C.font,
+                                    fontSize: 12,
+                                    color: C.dim,
+                                }}
                             >
-                                {deal.deal_grade}
+                                Pending — captured on next analyze
                             </div>
-                        </Card>
-                    )}
+                        </div>
+                    </>
+                )}
+            </div>
 
-                    {deal.investment_strategy && (
-                        <Card size="sm" className="px-3 py-2">
-                            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Strategy
-                            </div>
-                            <div className="mt-1">
-                                <Badge variant="secondary">
-                                    {formatStrategy(deal.investment_strategy)}
-                                </Badge>
-                            </div>
-                        </Card>
-                    )}
+            {/* ─── Content ─────────────────────────────────────────── */}
+            <div
+                style={{
+                    maxWidth: 1100,
+                    margin: "0 auto",
+                    padding: "24px",
+                }}
+            >
+                {/* Property Info Card */}
+                <PropertyInfoCard deal={deal} sc={sc} />
 
-                    {deal.pipeline_status && (
-                        <Card size="sm" className="px-3 py-2">
-                            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Pipeline
-                            </div>
-                            <div className="mt-1">
-                                <Badge variant="outline">
-                                    {deal.pipeline_status}
-                                </Badge>
-                            </div>
-                        </Card>
-                    )}
+                {/* Deal Header Card */}
+                <DealHeaderCard
+                    deal={deal}
+                    sc={sc}
+                    recommendation={recommendation}
+                    topRisk={topRisk}
+                />
 
-                    {deal.status && (
-                        <Card size="sm" className="px-3 py-2">
-                            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Status
-                            </div>
-                            <div className="mt-1">
-                                <Badge variant="outline">{deal.status}</Badge>
-                            </div>
-                        </Card>
-                    )}
+                {/* AI Analysis (collapsible — interactive client child) */}
+                {deal.notes && <AnalysisAccordion notes={deal.notes} />}
+
+                {/* Two-column: Comps (left, streamed) + Monte Carlo (right) */}
+                <div
+                    style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 16,
+                    }}
+                >
+                    {/* Comps streams in via Suspense — the comps API call
+                        runs at render time but doesn't block the static
+                        shell. This is the visible "rendering primitives"
+                        demo: ISR for the deal record + Suspense streaming
+                        for the fresher data. */}
+                    <Suspense fallback={<CompsTableSkeleton />}>
+                        <CompsTable address={deal.address} />
+                    </Suspense>
+
+                    {/* Monte Carlo — only renders if saved with the deal.
+                        Future enhancement: save the MC result inside
+                        speed_check JSONB when run_what_if runs in chat. */}
+                    <MonteCarloPanel data={sc.monte_carlo ?? null} />
                 </div>
-
-                {/* Notes — free-form text from the create_deal flow.
-                    `whitespace-pre-wrap` preserves the line breaks the
-                    agent or user typed in; without it, multi-paragraph
-                    notes collapse to a single run-on line. */}
-                {deal.notes && (
-                    <Card className="mb-6">
-                        <CardContent>
-                            <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                Notes
-                            </div>
-                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-                                {deal.notes}
-                            </p>
-                        </CardContent>
-                    </Card>
-                )}
-
-                {/* Footer row — created/updated timestamps. Only renders
-                    if at least one date is available; an empty timestamp
-                    row would just be visual noise. */}
-                {(createdAt || updatedAt) && (
-                    <div className="mt-8 flex flex-wrap gap-x-6 gap-y-1 border-t pt-4 text-xs text-muted-foreground">
-                        {createdAt && <span>Created {createdAt}</span>}
-                        {updatedAt && <span>Updated {updatedAt}</span>}
-                    </div>
-                )}
-            </main>
+            </div>
         </div>
     );
+}
+
+// ─── Property Info Card ────────────────────────────────────────────────
+
+function PropertyInfoCard({
+    deal,
+    sc,
+}: {
+    deal: DealRecord;
+    sc: SpeedCheck;
+}) {
+    const items: Array<{ label: string; value: string }> = [
+        { label: "Beds", value: fmtNum(sc.beds) },
+        { label: "Baths", value: fmtNum(sc.baths) },
+        { label: "Sqft", value: sc.sqft ? sc.sqft.toLocaleString() : "—" },
+        { label: "Year", value: fmtNum(sc.year_built) },
+        { label: "Type", value: sc.property_type ?? "—" },
+        {
+            label: "Lot",
+            value: sc.lot_size
+                ? `${(sc.lot_size / 1000).toFixed(1)}k sf`
+                : "—",
+        },
+    ];
+
+    return (
+        <div
+            style={{
+                background: C.sf,
+                border: `1px solid ${C.bd}`,
+                borderRadius: 7,
+                padding: "14px 16px",
+                marginBottom: 16,
+            }}
+        >
+            <div
+                style={{
+                    fontFamily: C.font,
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: C.text,
+                    marginBottom: 10,
+                }}
+            >
+                {deal.address}
+            </div>
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(6, 1fr)",
+                    gap: 16,
+                }}
+            >
+                {items.map((i) => (
+                    <div key={i.label}>
+                        <div
+                            style={{
+                                fontFamily: C.font,
+                                fontSize: 10,
+                                color: C.dim,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.5,
+                                marginBottom: 3,
+                            }}
+                        >
+                            {i.label}
+                        </div>
+                        <div
+                            style={{
+                                fontFamily: C.font,
+                                fontSize: 15,
+                                fontWeight: 500,
+                                color: C.text,
+                            }}
+                        >
+                            {i.value}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+// ─── Deal Header Card ──────────────────────────────────────────────────
+
+function DealHeaderCard({
+    deal,
+    sc,
+    recommendation,
+    topRisk,
+}: {
+    deal: DealRecord;
+    sc: SpeedCheck;
+    recommendation: { label: string; color: string };
+    topRisk?: { severity: number; message: string };
+}) {
+    const metrics = [
+        {
+            label: "ARV",
+            value: formatUSD(sc.arv_estimate),
+            sub: "After Repair Value",
+            color: sc.arv_estimate ? C.green : C.sub,
+        },
+        {
+            label: "REPAIRS",
+            value: formatUSD(sc.estimated_repairs),
+            sub: "Est. scope & budget",
+            color: C.sub,
+        },
+        {
+            label: "EST. PROFIT",
+            value: formatUSD(sc.profit_spread),
+            sub: "After all costs",
+            color: (sc.profit_spread ?? 0) > 0 ? C.green : C.sub,
+        },
+        {
+            label: "MAO",
+            value: formatUSD(sc.mao),
+            sub: "Max allowable offer",
+            color: sc.mao ? C.amber : C.sub,
+        },
+    ];
+
+    return (
+        <div
+            style={{
+                background: C.sf,
+                border: `1px solid ${C.bd}`,
+                borderRadius: 7,
+                padding: "10px 16px 12px",
+                marginBottom: 16,
+            }}
+        >
+            {/* Top row */}
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 10,
+                }}
+            >
+                <div
+                    style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: "50%",
+                        background: recommendation.color,
+                    }}
+                />
+                <span
+                    style={{
+                        fontFamily: C.font,
+                        fontSize: 15,
+                        fontWeight: 600,
+                        color: recommendation.color,
+                    }}
+                >
+                    {recommendation.label}
+                </span>
+                {deal.investment_strategy && (
+                    <div
+                        style={{
+                            padding: "2px 8px",
+                            background: "rgba(96,165,250,0.1)",
+                            border: "1px solid rgba(96,165,250,0.2)",
+                            borderRadius: 4,
+                        }}
+                    >
+                        <span
+                            style={{
+                                fontFamily: C.font,
+                                fontSize: 11,
+                                color: C.blue,
+                            }}
+                        >
+                            Strategy: {formatStrategy(deal.investment_strategy)}
+                        </span>
+                    </div>
+                )}
+                <div
+                    style={{
+                        padding: "2px 8px",
+                        background: "rgba(255,255,255,0.05)",
+                        border: `1px solid ${C.bd}`,
+                        borderRadius: 4,
+                    }}
+                >
+                    <span
+                        style={{
+                            fontFamily: C.font,
+                            fontSize: 11,
+                            color: C.sub,
+                        }}
+                    >
+                        {gradeLabel(sc.deal_grade ?? null)}
+                    </span>
+                </div>
+                <div
+                    style={{
+                        marginLeft: "auto",
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 6,
+                    }}
+                >
+                    <span
+                        style={{
+                            fontFamily: C.font,
+                            fontSize: 11,
+                            color: C.dim,
+                        }}
+                    >
+                        Deal score
+                    </span>
+                    <span
+                        style={{
+                            fontFamily: C.font,
+                            fontSize: 26,
+                            fontWeight: 700,
+                            color: C.text,
+                        }}
+                    >
+                        {sc.deal_score ?? deal.deal_score_int ?? "—"}
+                    </span>
+                    <span
+                        style={{
+                            fontFamily: C.font,
+                            fontSize: 11,
+                            color: C.dim,
+                        }}
+                    >
+                        /100
+                    </span>
+                </div>
+            </div>
+
+            {/* Metric grid */}
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(4, 1fr)",
+                    gap: 1,
+                    background: C.bd,
+                }}
+            >
+                {metrics.map((m) => (
+                    <div
+                        key={m.label}
+                        style={{
+                            padding: "11px 12px",
+                            background: "rgba(255,255,255,0.02)",
+                        }}
+                    >
+                        <div
+                            style={{
+                                fontFamily: C.font,
+                                fontSize: 10,
+                                color: C.dim,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.5,
+                                marginBottom: 4,
+                            }}
+                        >
+                            {m.label}
+                        </div>
+                        <div
+                            style={{
+                                fontFamily: C.font,
+                                fontSize: 22,
+                                fontWeight: 600,
+                                color: m.color,
+                                marginBottom: 2,
+                            }}
+                        >
+                            {m.value}
+                        </div>
+                        <div
+                            style={{
+                                fontFamily: C.font,
+                                fontSize: 10,
+                                color: C.dim,
+                            }}
+                        >
+                            {m.sub}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            {/* Warning banner — only when there's a severity-4+ risk */}
+            {topRisk && (
+                <div
+                    style={{
+                        marginTop: 12,
+                        padding: "10px 12px",
+                        background: "rgba(245,158,11,0.06)",
+                        border: "1px solid rgba(245,158,11,0.2)",
+                        borderLeft: `3px solid ${C.amber}`,
+                        borderRadius: 5,
+                    }}
+                >
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 8,
+                        }}
+                    >
+                        <span style={{ fontSize: 14, marginTop: 1 }}>⚠️</span>
+                        <div style={{ flex: 1 }}>
+                            <div
+                                style={{
+                                    fontFamily: C.font,
+                                    fontSize: 11,
+                                    color: C.amber,
+                                    textTransform: "uppercase",
+                                    letterSpacing: 0.7,
+                                    fontWeight: 600,
+                                    marginBottom: 3,
+                                }}
+                            >
+                                Valuation Risk
+                            </div>
+                            <div
+                                style={{
+                                    fontFamily: C.font,
+                                    fontSize: 12,
+                                    color: C.sub,
+                                    lineHeight: 1.5,
+                                }}
+                            >
+                                {topRisk.message}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────
+
+function fmtNum(n: number | null | undefined): string {
+    if (n == null) return "—";
+    return String(n);
+}
+
+function recommendationFromGrade(
+    g: string | null | undefined,
+): { label: string; color: string } {
+    switch (g) {
+        case "A":
+            return { label: "Strong Buy", color: C.green };
+        case "B":
+            return { label: "Good Buy", color: C.green };
+        case "C":
+            return { label: "Investigate", color: C.amber };
+        case "D":
+            return { label: "Caution", color: C.amber };
+        case "F":
+            return { label: "Pass", color: C.red };
+        default:
+            return { label: "Pending", color: C.sub };
+    }
 }

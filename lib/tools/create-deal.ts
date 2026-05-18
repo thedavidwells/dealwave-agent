@@ -129,6 +129,69 @@ const createDealInputSchema = z.object({
         .max(2)
         .optional()
         .describe("From analyze_deal.dealGrade. A/B/C/D/F."),
+
+    // ---- Property characteristics ----
+    // These populate the PropertyInfoCard on the /deals/[id] detail page
+    // (beds / baths / sqft / year / type / lot). The agent should extract
+    // them from analyze_deal's property data if exposed there. All
+    // optional — missing fields render as "—" on the detail page.
+    beds: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe("Bedroom count. From analyze_deal.propertyDetail.bedrooms (if present)."),
+    baths: z
+        .number()
+        .nonnegative()
+        .optional()
+        .describe("Bathroom count. From analyze_deal.propertyDetail.bathrooms (if present)."),
+    sqft: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Living square feet. From analyze_deal.propertyDetail.livingSquareFeet or .sqft (if present)."),
+    year_built: z
+        .number()
+        .int()
+        .optional()
+        .describe("Year built. From analyze_deal.propertyDetail.yearBuilt (if present)."),
+    property_type: z
+        .string()
+        .max(50)
+        .optional()
+        .describe("Property type. From analyze_deal.propertyDetail.propertyType. Examples: 'SFR', 'Multi-Family', 'Condo'."),
+    lot_size: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Lot size in square feet. From analyze_deal.lotSize (if present)."),
+
+    // ---- Monte Carlo result (optional) ----
+    // Populated when run_what_if ran in this same conversation and the user
+    // is now saving. Embedded into speed_check JSONB as `monte_carlo` so the
+    // /deals/[id] page's MonteCarloPanel renders the histogram + percentiles.
+    monte_carlo: z
+        .object({
+            p10: z.number(),
+            p50: z.number(),
+            p90: z.number(),
+            probability_of_loss: z.number().min(0).max(1),
+            value_at_risk_95: z.number(),
+            trials: z.number().int().positive(),
+            interpretation: z.string().optional(),
+        })
+        .optional()
+        .describe(
+            "Monte Carlo NUMERIC SUMMARY from run_what_if. Pass the " +
+                "percentile + risk fields when the user ran MC earlier in " +
+                "this conversation. DO NOT pass histogram_png_base64 — " +
+                "it's 30-50KB and forwarding it through the model forces " +
+                "regeneration of the entire base64 string token-by-token, " +
+                "blocking the save for minutes. The histogram is already " +
+                "rendered inline from the run_what_if tool result; the " +
+                "saved deal record only needs the numeric summary.",
+        ),
 });
 
 export const createDealTool = tool({
@@ -161,6 +224,13 @@ export const createDealTool = tool({
         profit_spread,
         deal_score,
         deal_grade,
+        beds,
+        baths,
+        sqft,
+        year_built,
+        property_type,
+        lot_size,
+        monte_carlo,
     }) => {
         // Build the request body. Only include optional fields if set —
         // mirrors how dealwave-client handles undefined fields elsewhere.
@@ -184,13 +254,21 @@ export const createDealTool = tool({
             mao !== undefined ||
             estimated_repairs !== undefined ||
             profit_spread !== undefined ||
-            deal_score !== undefined;
+            deal_score !== undefined ||
+            beds !== undefined ||
+            baths !== undefined ||
+            sqft !== undefined ||
+            year_built !== undefined ||
+            property_type !== undefined ||
+            lot_size !== undefined ||
+            monte_carlo !== undefined;
         if (hasEnrichment) {
             const speedCheck: Record<string, unknown> = {
                 // Always present — prevents the dashboard's detail page from
                 // crashing on `deal.speed_check.manualComps ?? []`.
                 manualComps: [],
             };
+            // Financial enrichment
             if (arv_estimate !== undefined) speedCheck.arv_estimate = arv_estimate;
             if (arv_high !== undefined) speedCheck.arv_high = arv_high;
             if (mao !== undefined) speedCheck.mao = mao;
@@ -200,6 +278,16 @@ export const createDealTool = tool({
                 speedCheck.profit_spread = profit_spread;
             if (deal_score !== undefined) speedCheck.deal_score = deal_score;
             if (deal_grade !== undefined) speedCheck.deal_grade = deal_grade;
+            // Property characteristics — populate PropertyInfoCard on /deals/[id]
+            if (beds !== undefined) speedCheck.beds = beds;
+            if (baths !== undefined) speedCheck.baths = baths;
+            if (sqft !== undefined) speedCheck.sqft = sqft;
+            if (year_built !== undefined) speedCheck.year_built = year_built;
+            if (property_type !== undefined)
+                speedCheck.property_type = property_type;
+            if (lot_size !== undefined) speedCheck.lot_size = lot_size;
+            // Monte Carlo — populate MonteCarloPanel on /deals/[id]
+            if (monte_carlo !== undefined) speedCheck.monte_carlo = monte_carlo;
             body.speed_check = speedCheck;
         }
 

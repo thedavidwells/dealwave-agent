@@ -2,22 +2,55 @@ import type { NextConfig } from "next";
 import { withWorkflow } from "workflow/next";
 
 const nextConfig: NextConfig = {
+    // PPR via `cacheComponents` was considered and tested for /deals,
+    // but rolled back for this build. The cacheComponents model is
+    // opinionated about what's cacheable (forbids Math.random in
+    // Client Components without Suspense boundaries, forbids the
+    // legacy `dynamic` / `revalidate` route segment configs, etc.) and
+    // the migration cost wasn't worth it for the interview demo. The
+    // current rendering story is still two strategies:
+    //   - /deals/[id] uses ISR (export const revalidate = 60) so the
+    //     deal record is cached at the edge for a minute.
+    //   - /deals uses regular Suspense streaming around the async
+    //     DealsGrid server component — same visible UX as PPR, just
+    //     without the static-shell prerendering optimization.
+    // Adding PPR is a follow-up once every route has been audited
+    // against cacheComponents' constraints.
     images: {
-        // Allow next/image to optimize the property hero on /deals/[id].
-        // DealWave's analyze pipeline stores property photos in Supabase
-        // Storage as a side-effect, returning the public CDN URL on the
-        // deal record's `property_image_url` field. Pattern is the
-        // wildcard project subdomain since we don't pin to a specific
-        // project ref in env — if we ever lock to one project, tighten
-        // this to that exact hostname instead. `pathname` is restricted
-        // to the public storage object path so a typo or malicious deal
-        // record can't redirect the optimizer to an arbitrary endpoint
-        // on supabase.co.
+        // Allow next/image to optimize the property hero on /deals/[id]
+        // and the deal-card thumbnails on /deals.
+        //
+        // DealWave's production pipeline (verified in
+        // property-image.service.ts:651 — `tryZenRowsImageOnly` calls
+        // `downloadValidateAndUploadImage` which re-uploads scraped
+        // images to Supabase Storage and returns the public CDN URL).
+        // The Supabase wildcard subdomain is the production source. The
+        // pathname is restricted to the public storage object path so a
+        // typo or malicious deal record can't redirect the optimizer to
+        // an arbitrary endpoint on supabase.co.
+        //
+        // images.unsplash.com is allowlisted for test deals where a
+        // hardcoded Unsplash placeholder was used during early API
+        // verification (before the real image pipeline was live). Real
+        // production deals don't go through this hostname.
         remotePatterns: [
             {
                 protocol: "https",
                 hostname: "*.supabase.co",
                 pathname: "/storage/v1/object/public/**",
+            },
+            {
+                protocol: "https",
+                hostname: "images.unsplash.com",
+            },
+            {
+                // Zillow's image CDN — production analyze runs return
+                // Zillow URLs directly (e.g.
+                // photos.zillowstatic.com/fp/<hash>-p_f.jpg). Verified
+                // from the next/image runtime error after running an
+                // analyze on a real Phoenix property.
+                protocol: "https",
+                hostname: "photos.zillowstatic.com",
             },
         ],
     },

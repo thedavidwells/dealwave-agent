@@ -11,15 +11,19 @@ import { pullCompsTool } from "@/lib/tools/pull-comps";
 import { createDealTool } from "@/lib/tools/create-deal";
 import { listDealsTool } from "@/lib/tools/list-deals";
 import { runWhatIfTool } from "@/lib/tools/run-what-if";
+import { updateDealTool } from "@/lib/tools/update-deal";
 import { VerdictSchema } from "@/lib/schemas/verdict";
-
-// Disable Next.js's default response caching for this route
-// AI responses are dynamic per-request - so we don't want to cache them
 
 // (We'll leave the runtime as Node.js default for now.
 // Edge runtime would also work for streaming, but Workflow SDK will require node.)
-
-export const dynamic = "force-dynamic";
+//
+// Note: previously this file exported `dynamic = "force-dynamic"` to
+// disable response caching. Under Next.js 16's `cacheComponents: true`,
+// the legacy `dynamic` route segment config is incompatible and rejected
+// at build time. API route handlers that stream live data (no
+// `'use cache'` directive) are treated as dynamic by default under
+// cacheComponents — no opt-in flag needed. The streamText() + workflow
+// runtime here means there's nothing cache-eligible anyway.
 
 // Allow up to 60s for the full research loop + advisor step.
 // (Default Next.js function timeout on Hobby/Pro is 10s - we need more because
@@ -212,8 +216,10 @@ export async function POST(request: Request) {
                     matching the verdict's recommendedStrategy.
 
                     ALSO pass through enrichment fields from analyze_deal so the user's
-                    My Deals dashboard shows real numbers (not $0) and the detail page
-                    doesn't crash. Map analyze_deal output to create_deal input:
+                    My Deals dashboard AND the /deals/[id] detail page show full data.
+                    Map analyze_deal output to create_deal input:
+
+                    Economics:
                       property_image_url  ← analyze_deal.imageUrl OR propertyDetails.imageUrl
                       arv_estimate        ← analyze_deal.arvEstimate
                       arv_high            ← analyze_deal.arvHigh
@@ -222,8 +228,33 @@ export async function POST(request: Request) {
                       profit_spread       ← analyze_deal.estimatedProfit
                       deal_score          ← analyze_deal.dealScore
                       deal_grade          ← analyze_deal.dealGrade
+
+                    Property characteristics (populate PropertyInfoCard on the
+                    detail page) — these are TOP-LEVEL fields on analyze_deal's
+                    response, NOT nested under propertyDetail:
+                      beds                ← analyze_deal.beds
+                      baths               ← analyze_deal.baths
+                      sqft                ← analyze_deal.sqft
+                      year_built          ← analyze_deal.yearBuilt
+                      property_type       ← analyze_deal.propertyType
+                      lot_size            ← analyze_deal.lotSize
+
                     Pass only the fields the analyze_deal result actually returned;
                     omit any that were undefined.
+
+                    Monte Carlo (only present if run_what_if ran THIS turn):
+                      monte_carlo         ← numeric summary from run_what_if:
+                                            { p10, p50, p90, probability_of_loss,
+                                              value_at_risk_95, trials,
+                                              interpretation }
+
+                    CRITICAL: do NOT include histogram_png_base64 in the
+                    monte_carlo object. That field is 30-50KB and the model
+                    would have to regenerate the entire base64 string
+                    character-by-character to forward it — blocking the save
+                    for minutes. Only pass the numeric fields above. The
+                    histogram is already rendered inline in chat; the saved
+                    deal record only needs the numbers.
 
                     When create_deal succeeds, the tool result contains a 'deal' object
                     with an 'id' field (e.g. deal.id = "abc-123"). Your confirmation
@@ -237,6 +268,18 @@ export async function POST(request: Request) {
 
                     If the user clicks Skip in the approval card OR explicitly declines
                     in text, acknowledge briefly and offer to help with the next analysis.
+
+                    UPDATE_DEAL — call this to attach data to an ALREADY-SAVED deal.
+                    The most common case: the user saved a deal, then ran a Monte
+                    Carlo (run_what_if) on it, and now wants the MC result to show
+                    up on the deal's detail page. Pass deal_id (from the prior
+                    create_deal result's deal.id) and monte_carlo (the full
+                    run_what_if output object). Also usable to update notes or move
+                    pipeline_status. PATCH semantics: fields you omit are preserved
+                    server-side. Always call this AFTER run_what_if runs IF the
+                    deal was already saved in the same conversation. Do NOT call
+                    if the deal hasn't been saved yet — pass monte_carlo through
+                    create_deal instead.
 
                     RUN_WHAT_IF — call this AFTER analyze_deal when the user wants to
                     understand the *risk* or *variance* of a deal, not just the point
@@ -288,12 +331,13 @@ export async function POST(request: Request) {
                     create_deal: createDealTool,
                     list_deals: listDealsTool,
                     run_what_if: runWhatIfTool,
+                    update_deal: updateDealTool,
                 },
 
-                // Stop after 10 steps. Bumped from 8 to leave headroom for
-                // chained flows like "analyze → comps → run_what_if → save"
-                // where the model may need an extra step for narration.
-                stopWhen: stepCountIs(10),
+                // Stop after 12 steps. Bumped from 10 to leave headroom for
+                // chained flows like "analyze → comps → save → run_what_if
+                // → update_deal" (six tool turns + narration).
+                stopWhen: stepCountIs(12),
 
                 // Per-step telemetry. Logs which research model handled
                 // each step and how many tokens it consumed — useful for
@@ -383,8 +427,21 @@ export async function POST(request: Request) {
                 }
             }
 
-            const shouldAdvise =
-                analysisResults.length > 0 && !touchedCreateDeal;
+            // Skip the advisor when there's no *successful* analysis to
+            // summarize. The agent's tools emit { error: true, ... } envelopes
+            // when DealWave's /analyze or /comps returns a 500 (e.g. address
+            // not in REAPI, pipeline transient failure). Feeding those to
+            // generateObject is worse than skipping: the model produces a
+            // truncated "everything failed" object with 1-2 metrics, then Zod
+            // rejects it for failing min(4) on the metrics array, then the
+            // user sees a chat response with no verdict card. Better to
+            // gracefully render no verdict and let the model's error-handling
+            // prose stand alone.
+            const hasSuccessfulAnalysis = analysisResults.some((r) => {
+                const out = r.output as { error?: boolean } | null | undefined;
+                return out != null && out.error !== true;
+            });
+            const shouldAdvise = hasSuccessfulAnalysis && !touchedCreateDeal;
 
             if (shouldAdvise) {
                 try {

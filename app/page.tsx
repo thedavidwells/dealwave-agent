@@ -124,6 +124,51 @@ export default function Home() {
         const stored = window.localStorage.getItem("dw:inspector-open");
         if (stored === "1") setInspectorOpen(true);
     }, []);
+
+    // ─── Chat persistence ──────────────────────────────────────────────
+    // Persist the current chat session to localStorage so that navigating
+    // away (e.g. clicking "View this deal" → "Back to chat") doesn't blow
+    // away the conversation. useChat keeps messages in memory only; we
+    // hydrate from storage on mount and write on every messages change.
+    //
+    // Storage key: dw:chat-session. Single session for now — a "previous
+    // chats" sidebar (keyed by session ID with timestamps) is a follow-up
+    // that needs a small UI lift. localStorage write is debounced
+    // implicitly by React's effect schedule — happens once per render
+    // cycle when messages actually change, not on every keystroke.
+    useEffect(() => {
+        // Hydrate AFTER mount so SSR and first client render agree.
+        // useChat starts empty; we replace its state once with the saved
+        // messages if any are present.
+        const raw = window.localStorage.getItem("dw:chat-session");
+        if (!raw) return;
+        try {
+            const saved = JSON.parse(raw) as typeof messages;
+            if (Array.isArray(saved) && saved.length > 0) {
+                setMessages(saved);
+            }
+        } catch {
+            // Corrupted JSON — clear it rather than crash.
+            window.localStorage.removeItem("dw:chat-session");
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // intentionally one-shot hydration on mount
+
+    useEffect(() => {
+        if (messages.length === 0) {
+            window.localStorage.removeItem("dw:chat-session");
+            return;
+        }
+        try {
+            window.localStorage.setItem(
+                "dw:chat-session",
+                JSON.stringify(messages),
+            );
+        } catch {
+            // Quota exceeded or storage unavailable — degrade silently.
+            // The chat still works, just won't survive a page nav.
+        }
+    }, [messages]);
     useEffect(() => {
         window.localStorage.setItem(
             "dw:inspector-open",
@@ -172,6 +217,39 @@ export default function Home() {
                 </div>
 
                 <div className="flex items-center" style={{ gap: 8 }}>
+                    {/* My Deals link — server-rendered index of every
+                        saved deal. Demonstrates the second rendering
+                        primitive in the project: Partial Prerendering.
+                        Static shell + Suspense-streamed deal cards. */}
+                    <a
+                        href="/deals"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center transition-colors"
+                        style={{
+                            gap: 6,
+                            padding: "5px 11px",
+                            background: "transparent",
+                            border: "1px solid var(--dw-border)",
+                            borderRadius: 4,
+                            fontSize: 13,
+                            color: "var(--dw-sub)",
+                            textDecoration: "none",
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.borderColor =
+                                "var(--dw-border-md)";
+                            e.currentTarget.style.color = "var(--dw-text)";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.borderColor =
+                                "var(--dw-border)";
+                            e.currentTarget.style.color = "var(--dw-sub)";
+                        }}
+                    >
+                        My Deals
+                    </a>
+
                     {/* AI Primitives toggle — replaces the old static AI
                         Gateway pill + EvalBadge. Opens the right-side
                         PrimitivesInspector drawer which shows every Vercel

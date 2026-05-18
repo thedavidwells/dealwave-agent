@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
@@ -51,7 +52,19 @@ export default function RootLayout({
             className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
         >
             <body className="min-h-full flex flex-col">
-                <TooltipProvider>{children}</TooltipProvider>
+                {/* Suspense boundary at the layout root.
+                    Under Next.js 16's `cacheComponents: true`, Client
+                    Components that touch random sources during SSR
+                    (e.g. AI SDK's useChat which calls `generateId()`
+                    via Math.random()) need a Suspense boundary above
+                    them — Next prerenders the fallback and resolves
+                    the random value at runtime. Verified from
+                    nextjs.org/docs/messages/next-prerender-random-client.
+                    Null fallback because there's nothing visually we
+                    want to show during the very brief client hydrate. */}
+                <Suspense fallback={null}>
+                    <TooltipProvider>{children}</TooltipProvider>
+                </Suspense>
             </body>
         </html>
     );

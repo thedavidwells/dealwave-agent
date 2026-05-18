@@ -58,10 +58,14 @@ export async function dealWaveFetch<T = unknown>(
         if (qs) url += `?${qs}`;
     }
 
-    // 30-second timeout for all DealWave API calls
-    // Pipeline is REAPI + Zenrows + AVN -> can be slow sometimes, so we want to give it a bit of time.
+    // 60-second timeout for all DealWave API calls.
+    // Pipeline is REAPI + Zenrows + AVM and (now) the image-fetch step
+    // landed in /api/v1/analyze — observed real analyze calls taking
+    // 30-45s end-to-end on cold cache after that change. Bumped from 30s
+    // to give the slower pipeline headroom; the chat route's maxDuration
+    // is 60s so longer would just timeout at the function boundary.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    const timeout = setTimeout(() => controller.abort(), 60_000);
 
     try {
         // Build headers conditionally: GETs have no body, so a stray
