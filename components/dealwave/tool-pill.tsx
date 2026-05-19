@@ -165,9 +165,9 @@ export function ToolPill({
             type="button"
             onClick={onToggle}
             aria-expanded={isExpanded}
-            className="inline-flex items-center gap-[5px] rounded-full font-mono text-[11px] leading-none"
+            className="inline-flex items-center gap-[6px] rounded-full font-mono text-[12.5px] leading-none"
             style={{
-                padding: "4px 10px",
+                padding: "6px 13px",
                 borderWidth: 1,
                 borderStyle: "solid",
                 background: colors.background,
@@ -181,16 +181,16 @@ export function ToolPill({
         >
             {/* Lightning glyph — design's chosen "tool call" mark. Kept as a
                 literal character (not an emoji) so it inherits chip color. */}
-            <span aria-hidden className="text-[11px] leading-none">
+            <span aria-hidden className="text-[12px] leading-none">
                 ⚡
             </span>
             <span className="leading-none">{toolName}</span>
             {statusNode}
-            {/* Chevron — small triangle hinting expand/collapse. 9px keeps
+            {/* Chevron — small triangle hinting expand/collapse. 10px keeps
                 it visually subordinate to the tool name. */}
             <span
                 aria-hidden
-                className="text-[9px] leading-none"
+                className="text-[10px] leading-none"
                 style={{ color: "var(--dw-dim)" }}
             >
                 {isExpanded ? "▲" : "▼"}
@@ -379,9 +379,9 @@ function ExpandedPanel({ part }: { part: ToolPart }) {
             {/* Input section */}
             <div>
                 <div
-                    className="text-[11px] uppercase"
+                    className="text-[11px] font-semibold uppercase"
                     style={{
-                        letterSpacing: "1.2em",
+                        letterSpacing: "0.08em",
                         color: "var(--dw-muted)",
                         marginBottom: 6,
                     }}
@@ -399,9 +399,9 @@ function ExpandedPanel({ part }: { part: ToolPart }) {
                 }}
             >
                 <div
-                    className="text-[11px] uppercase"
+                    className="text-[11px] font-semibold uppercase"
                     style={{
-                        letterSpacing: "1.2em",
+                        letterSpacing: "0.08em",
                         color: "var(--dw-muted)",
                         marginBottom: 6,
                     }}

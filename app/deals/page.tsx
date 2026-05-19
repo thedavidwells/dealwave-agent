@@ -274,8 +274,13 @@ async function DealsGrid() {
                 gap: 16,
             }}
         >
-            {deals.map((d) => (
-                <DealCard key={d.id} deal={d} />
+            {deals.map((d, i) => (
+                // Priority loading on the FIRST card only — it's the LCP
+                // element above the fold and lazy-loading it (the default
+                // for next/image) measurably hurts our LCP score. Every
+                // other card stays lazy so we don't waste bandwidth on
+                // cards the user may never scroll to.
+                <DealCard key={d.id} deal={d} priority={i === 0} />
             ))}
         </div>
     );
@@ -283,7 +288,15 @@ async function DealsGrid() {
 
 // ─── DealCard ──────────────────────────────────────────────────────────
 
-function DealCard({ deal }: { deal: DealListItem }) {
+function DealCard({
+    deal,
+    priority = false,
+}: {
+    deal: DealListItem;
+    // True for the first card on the page — flags the image as the LCP
+    // element so Next.js loads it eagerly instead of lazy-loading.
+    priority?: boolean;
+}) {
     const sc = deal.speed_check ?? {};
     const score = deal.deal_score_int ?? null;
     const arv = sc.arv_estimate ?? null;
@@ -321,6 +334,10 @@ function DealCard({ deal }: { deal: DealListItem }) {
                         fill
                         sizes="(max-width: 768px) 100vw, 360px"
                         style={{ objectFit: "cover" }}
+                        // priority on the first card only — that's the LCP
+                        // element. Next.js disables lazy loading and adds a
+                        // <link rel="preload"> hint for prioritized images.
+                        priority={priority}
                     />
                 ) : (
                     <div

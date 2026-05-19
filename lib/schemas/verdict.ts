@@ -6,9 +6,8 @@
 // our eval script asserts on these fields per known property.
 //
 // Schema is SFR-investor-focused: surfaces the metrics DealWave's
-// actual paying customers underwrite by (ARV, MAO, repairs, spread,
-// equity position) — not multi-family commercial signals (cap rate,
-// CoC, DSCR).
+// real paying customers underwrite by (ARV, MAO, repairs, spread,
+// equity position)
 
 import { z } from "zod";
 
@@ -21,11 +20,17 @@ const MetricTileSchema = z.object({
 
     value: z.number(),
 
-    // Optional confidence range — only set for ARV today, where
-    // DealWave returns arvLow / arvHigh. Lets the UI show
-    // "$396K · $446K–$628K".
-    rangeLow: z.number().optional(),
-    rangeHigh: z.number().optional(),
+    // Confidence range — only meaningful for ARV today, where DealWave
+    // returns arvLow / arvHigh. Lets the UI show "$396K · $446K–$628K".
+    //
+    // Nullable (not optional!) for OpenAI strict structured-output
+    // compatibility. OpenAI's strict mode requires every property to
+    // appear in the `required` array; `.optional()` removes it from
+    // required and triggers a 400 from OpenAI. `.nullable()` keeps the
+    // field required but allows the model to emit `null` when the
+    // metric doesn't have a meaningful range (anything other than ARV).
+    rangeLow: z.number().nullable(),
+    rangeHigh: z.number().nullable(),
 
     format: z
         .enum([
@@ -46,12 +51,16 @@ const MetricTileSchema = z.object({
                 "neutral = white (informational, no judgment).",
         ),
 
+    // Nullable (not optional) for OpenAI strict-mode compatibility — see
+    // rangeLow/rangeHigh above for the why. Set to null when the tile
+    // doesn't warrant an additional context line.
     context: z
         .string()
         .max(40)
-        .optional()
+        .nullable()
         .describe(
-            "Short context line under the metric, e.g. 'After Repair Value'.",
+            "Short context line under the metric, e.g. 'After Repair Value'. " +
+                "Set to null when no extra context is needed.",
         ),
 });
 
@@ -114,8 +123,12 @@ export const VerdictSchema = z.object({
                 "(e.g. 'Recommend offering $213K').",
         ),
 
-    // Severity-4+ risk flags surface as warnings.
-    risks: z.array(RiskSchema).default([]),
+    // Severity-4+ risk flags surface as warnings. Required (no default)
+    // so the model always emits an explicit array — keeps the schema
+    // compatible with OpenAI strict structured output, which treats
+    // `.default()` similarly to `.optional()` (drops the field from
+    // `required`). Model emits [] when no risks apply.
+    risks: z.array(RiskSchema),
 
     // Categorical data confidence: derived from analyze_deal's confidenceScore.
     // <60 = low, 60-80 = medium, >80 = high.

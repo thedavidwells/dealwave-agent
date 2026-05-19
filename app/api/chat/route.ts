@@ -1,6 +1,7 @@
 import {
+    Output,
+    generateText,
     streamText,
-    generateObject,
     convertToModelMessages,
     stepCountIs,
     createUIMessageStreamResponse,
@@ -67,13 +68,18 @@ function pickAllowed<T extends readonly string[]>(
     defaultValue: T[number],
     label: string,
 ): T[number] {
-    if (typeof candidate === "string" && (allowed as readonly string[]).includes(candidate)) {
+    if (
+        typeof candidate === "string" &&
+        (allowed as readonly string[]).includes(candidate)
+    ) {
         return candidate as T[number];
     }
     if (candidate !== undefined) {
         // Log once per unknown value so a stale UI release shows up in
         // the function logs without breaking the request.
-        console.warn(`[models] rejecting ${label}='${candidate}', using default '${defaultValue}'`);
+        console.warn(
+            `[models] rejecting ${label}='${candidate}', using default '${defaultValue}'`,
+        );
     }
     return defaultValue;
 }
@@ -132,10 +138,11 @@ export async function POST(request: Request) {
     //   1. Research — tool loop, pulls property data + runs comps (cheap, fast)
     //   2. Advisor  — structured verdict, interprets data + picks strategy
     //
-    // This is the AI Gateway model-tiering story made visible: N cheap
-    // calls for the research step + 1 expensive call for the advisor's
-    // final answer. Both show up in the Gateway dashboard with separate
-    // attribution.
+    // The createUIMessageStream function allows you to create a readable stream for UI messages
+    // with advanced features like message merging, error handling, and finish callbacks.
+    //
+    // https://ai-sdk.dev/docs/reference/ai-sdk-ui/create-ui-message-stream
+    //
     const stream = createUIMessageStream({
         execute: async ({ writer }) => {
             // ────────────────────────────────────────────────────────────
@@ -150,10 +157,7 @@ export async function POST(request: Request) {
                 // dropdown (see components/dealwave/model-selector.tsx) can
                 // swap this on a per-request basis.
                 model: researchModel,
-                providerOptions: gatewayOptions(
-                    researchModel,
-                    backupProvider,
-                ),
+                providerOptions: gatewayOptions(researchModel, backupProvider),
 
                 // System prompt sets the agent's identity and rules.
                 // We'll add tools here later...
@@ -431,7 +435,8 @@ export async function POST(request: Request) {
             // summarize. The agent's tools emit { error: true, ... } envelopes
             // when DealWave's /analyze or /comps returns a 500 (e.g. address
             // not in REAPI, pipeline transient failure). Feeding those to
-            // generateObject is worse than skipping: the model produces a
+            // running the structured-output advisor step is worse than
+            // skipping: the model produces a
             // truncated "everything failed" object with 1-2 metrics, then Zod
             // rejects it for failing min(4) on the metrics array, then the
             // user sees a chat response with no verdict card. Better to
@@ -445,7 +450,7 @@ export async function POST(request: Request) {
 
             if (shouldAdvise) {
                 try {
-                    const { object: verdict } = await generateObject({
+                    const { output: verdict } = await generateText({
                         // Sonnet default for the advisor step: same
                         // structured-output quality as Opus on this kind
                         // of task (validated tool results → fixed schema),
@@ -458,7 +463,9 @@ export async function POST(request: Request) {
                             advisorModel,
                             backupProvider,
                         ),
-                        schema: VerdictSchema,
+                        output: Output.object({
+                            schema: VerdictSchema,
+                        }),
                         system: `You produce a real-estate deal analysis as a
                             structured verdict for a single-family investor.
 
@@ -487,6 +494,12 @@ export async function POST(request: Request) {
                             - For buy-and-hold → ARV, Rent Est., dealScore, equity position
                             - For wholesale → ARV, MAO, Spread, Repairs
 
+                            Nullable tile fields — emit null when they don't apply:
+                            - rangeLow / rangeHigh: only meaningful for ARV tiles where DealWave
+                              returned arvLow/arvHigh. For every other tile, set both to null.
+                            - context: short context line under the value (e.g. "After Repair
+                              Value"). Set to null when no extra context is needed.
+
                             Health logic per tile:
                             - "strong" (green): above the conventional target for that metric under that strategy
                             - "concern" (red): below target / problem signal
@@ -498,7 +511,7 @@ export async function POST(request: Request) {
                         // no dangling tool calls → no MissingToolResults error.
                         prompt: `Produce a structured Verdict from these tool results:
 
-${JSON.stringify(analysisResults, null, 2)}`,
+                            ${JSON.stringify(analysisResults, null, 2)}`,
                     });
 
                     // Write the verdict as a custom data part. The client's

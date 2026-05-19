@@ -4,11 +4,14 @@ An SFR-investor deal analyst built on Next.js + the Vercel AI SDK. Paste a prope
 
 ## What it does
 
-- **Address in → tool loop out.** The research model drives `analyze_deal` and `pull_comps` against DealWave's REST API, auto-chaining to comps when confidence is low or comp count is thin.
+- **Address in → tool loop out.** The research model drives six tools against DealWave's REST API: `analyze_deal` + `pull_comps` (auto-chains to comps when confidence is low or comp count is thin), `list_deals` + `update_deal` for pipeline management, `create_deal` (needsApproval-gated, see below), and `run_what_if` for sensitivity analysis.
 - **Structured verdict.** A second advisor call reads the tool results and emits a Zod-validated `Verdict` (recommendation, strategy, dealScore, metric tiles, risks, follow-up chips). Rendered as a `VerdictCard` inline with the assistant message.
-- **Human-in-the-loop save.** `create_deal` is gated by AI SDK `needsApproval: true` — the loop pauses on an approval card until the user clicks Save or Skip. On success, a Workflow SDK durable function (`dealReviewWorkflow`) takes over for the post-save review wait.
+- **Human-in-the-loop save.** `create_deal` is gated by AI SDK `needsApproval: true` — the loop pauses on an approval card until the user clicks Save or Skip. On success, the tool's `execute` fires `start(dealReviewWorkflow)`, a Workflow SDK durable function that survives cold starts and waits for the post-save review.
+- **Sandboxed Monte Carlo.** `run_what_if` spawns a `@vercel/sandbox` python3.13 runtime, installs numpy + matplotlib, runs 10,000 trials varying ARV/repairs/holding-time per a model-generated transform, and returns P10/P50/P90 + a histogram PNG. Code executed in isolation, no host access.
 
 ## Architecture
+
+### Agent request flow
 
 ```
 Browser (useChat)
@@ -16,27 +19,57 @@ Browser (useChat)
     ▼
 POST /api/chat
     │
-    ├──► Research (tool loop) ──► analyze_deal / pull_comps / create_deal
-    │      (via AI Gateway)          (via DealWave /api/v1/)
+    ▼
+AI Gateway (model routing, per-call cost observability)
     │
-    ├──► Advisor  (verdict)   ──► VerdictSchema (Zod)
-    │      (via AI Gateway)
+    ├──► Research loop  ── streamText({ tools, stopWhen: stepCountIs(12) })
+    │       │
+    │       ├── analyze_deal  ─┐
+    │       ├── pull_comps     ├──► DealWave /api/v1/  (Bearer auth, 60s timeout)
+    │       ├── list_deals     │
+    │       ├── update_deal    ─┘
+    │       │
+    │       ├── create_deal  ── needsApproval (loop pauses in-process)
+    │       │                       │
+    │       │                user clicks Save (addToolApprovalResponse)
+    │       │                       │
+    │       │                       ▼
+    │       │                  tool execute() runs
+    │       │                       │
+    │       │                       ├──► POST /deals  (DealWave persists)
+    │       │                       └──► start(dealReviewWorkflow)  (fire-and-forget)
+    │       │
+    │       └── run_what_if  ──► @vercel/sandbox (python3.13)
+    │                              │
+    │                              ▼
+    │                         10k-trial Monte Carlo
+    │                         → P10/P50/P90 + histogram PNG
+    │
+    └──► Advisor (gated: hasSuccessfulAnalysis && !touchedCreateDeal)
+            │
+            ▼
+        generateObject({ schema: VerdictSchema })
+            │
+            ▼
+        data-verdict UI part ──► VerdictCard render
+                                 (banner + metric tiles + narrative + risks + chips)
+```
+
+### Durable workflow lifecycle (separate from the chat request)
+
+```
+start(dealReviewWorkflow)
     │
     ▼
-data-verdict UI part ──► VerdictCard render
-                       + follow-up chip click
-                       + Save Deal approval gate
-                                │
-                                ▼
-                        start(dealReviewWorkflow)
-                                │
-                                ▼
-                        reviewHook.create (pauses)
-                                │
-                        POST /api/agent/approve
-                                │
-                                ▼
-                        reviewHook.resume (workflow continues)
+'use workflow' directive ── durable; state survives serverless cold starts
+    │
+    ▼
+reviewHook.create({ token: dealId }) ── paused (0 compute, may wait days)
+    │
+POST /api/agent/approve  (user marks deal reviewed in the UI later)
+    │
+    ▼
+reviewHook.resume(dealId, decision) ── workflow continues
 ```
 
 The chat route composes a single `createUIMessageStream` that merges the research model's streaming output with the advisor's `generateObject` result written as a custom `data-verdict` part. The client receives one continuous SSE stream; both model calls show up as separate rows in the AI Gateway dashboard.
@@ -45,12 +78,15 @@ The chat route composes a single `createUIMessageStream` that merges the researc
 
 | Primitive | What it does here | File path |
 | --- | --- | --- |
-| AI Gateway | Plain-string model IDs (`anthropic/claude-haiku-4-5`, `anthropic/claude-sonnet-4-6`) — routing, observability, model tiering | `app/api/chat/route.ts` |
+| AI Gateway | Plain-string model IDs (`anthropic/claude-haiku-4-5`, `anthropic/claude-sonnet-4-6`, `openai/gpt-4o`) — routing, per-call cost observability, model tiering | `app/api/chat/route.ts` |
 | AI SDK (v6) | `streamText`, `generateObject`, `tool` with `needsApproval`, `useChat`, `createUIMessageStream` | `app/api/chat/route.ts`, `app/page.tsx`, `lib/tools/*.ts` |
-| Workflow SDK | `'use workflow'` durable function + `reviewHook` for post-save review, resumed by an API route | `lib/workflows/deal-analyst.ts`, `lib/hooks/approval.ts`, `app/api/agent/approve/route.ts` |
-| Zod schemas | Structured-output validation for the advisor step | `lib/schemas/verdict.ts` |
+| Workflow SDK | `'use workflow'` durable function + `reviewHook` for post-save review, resumed by an API route. Pause is free (0 compute) and may sit for days. | `lib/workflows/deal-analyst.ts`, `lib/hooks/approval.ts`, `app/api/agent/approve/route.ts` |
+| Sandbox | Isolated python3.13 runtime called by `run_what_if`. Spawns a sandbox, installs numpy + matplotlib, runs 10,000-trial Monte Carlo against a model-generated transform expression, returns P10/P50/P90 + histogram PNG. Code-execution surface with no host access — model-generated code can't read env vars or hit the network outside the sandbox. | `lib/tools/run-what-if.ts`, `scripts/sandbox-smoke.ts` |
+| Zod schemas | Structured-output validation for the advisor step — `VerdictSchema` uses `.nullable()` (not `.optional()`) for OpenAI strict-mode compatibility so the same schema works across providers | `lib/schemas/verdict.ts` |
 | AI Elements | Pre-built components consuming `useChat`'s typed parts — Conversation, Message, Tool, PromptInput, Shimmer, Suggestion | `components/ai-elements/` |
-| Next.js ISR | Deal detail page rebuilt in the background at most every 60s | `app/deals/[id]/page.tsx` |
+| Next.js ISR | Deal detail page rebuilt in the background at most every 60s, with the comps section streamed via Suspense for freshness | `app/deals/[id]/page.tsx` |
+| Next.js PPR | Saved-deals index — static shell prerendered at build time, deal cards stream in via Suspense from per-request DealWave fetches. Enabled globally via `cacheComponents: true` in `next.config.ts`. | `app/deals/page.tsx` |
+| Eval (CI-gate pattern) | Regression test set that runs the same research + advisor pipeline used in production, asserting on tool selection, recommendation, dealScore bounds, narrative markers, and negative cases. Exit code 0 on pass, 1 on fail — wire to GitHub Actions to gate PRs. | `evals/run.ts`, `evals/test-cases.json` |
 
 ## Running locally
 
@@ -98,7 +134,9 @@ Exit code is `0` on full pass, `1` on any failure. Wire to GitHub Actions to gat
 - **Bearer auth via explicit API key.** OIDC works as a fallback, but the explicit `AI_GATEWAY_API_KEY` makes localhost requests attribute to the project correctly (where the OIDC path is harder to wire up).
 - **Structured output as the eval target.** Asserting on free-text narratives is noisy; the Zod-validated `Verdict` gives us discrete fields (`recommendation`, `dealScore`, `recommendedStrategy`) that drift cleanly catches prompt-tuning regressions.
 - **No client-side Zod.** `VerdictCard` mirrors the Verdict type structurally and trusts server validation. Keeps Zod out of the client bundle.
-- **Image optimization via Next.js Image.** The deal page's property hero uses `next/image` against DealWave's Supabase Storage CDN. Vercel's image service serves AVIF/WebP variants per client, sizes responsively, and lazy-loads below the fold. The page itself is ISR'd at 60s; the image transforms cache independently. Two caching layers for one page — the right split.
+- **Image optimization via Next.js Image.** The deal page's property hero uses `next/image` against DealWave's Supabase Storage CDN. Vercel's image service serves AVIF/WebP variants per client, sizes responsively, and lazy-loads below the fold. The page itself is ISR'd at 60s; the image transforms cache independently. Two caching layers for one page — the right split. The first deal card on `/deals` is flagged `priority` so it isn't lazy-loaded — that's the LCP element above the fold; lazy-loading the LCP image measurably hurts the metric.
+- **Sandbox over running Python in the agent's process.** `run_what_if` could have been pure TypeScript Monte Carlo math — but the threat model is that the transform expression is model-generated code. Without Sandbox, `eval(expr)` would have full `process` + `require` access, so a prompt-injected transform could exfiltrate env vars or hit external endpoints. Sandbox isolates to a V8/python boundary with no host access. Costs ~2-3s of cold-start latency per call, accepted as the price of a defensible code-execution surface.
+- **PPR for `/deals`, ISR for `/deals/[id]` — two different rendering primitives for two different data-freshness needs.** The saved-deals index is a per-account live list — staleness here means a user saves a deal in chat and doesn't see it on the index page until revalidation, which is a UX bug. PPR's static-shell + Suspense-streamed cards keeps the page chrome instant while the cards are live per request. The detail page is the opposite shape: once a deal is saved, the underlying data shifts slowly, and ISR with a 60s revalidate gives SSG speed on every cache hit while still refreshing as the agent enriches the deal. Both pages also use Suspense for sub-region streaming (PPR uses it for the card list, ISR uses it for the comps section).
 
 ## Known limitations
 
@@ -112,25 +150,44 @@ Exit code is `0` on full pass, `1` on any failure. Wire to GitHub Actions to gat
 ```
 app/
   api/
-    chat/route.ts            Research tool loop + advisor verdict, single SSE stream
-    agent/approve/route.ts   Resumes dealReviewWorkflow via reviewHook
-  deals/[id]/page.tsx        ISR deal detail (revalidate: 60)
-  page.tsx                   useChat shell + VerdictCard render + approval buttons
+    chat/route.ts             Research tool loop + advisor verdict, single SSE stream
+    agent/approve/route.ts    Resumes dealReviewWorkflow via reviewHook
+  deals/page.tsx              PPR saved-deals index (static shell + Suspense-streamed cards)
+  deals/[id]/page.tsx         ISR deal detail (revalidate: 60) + Suspense-streamed comps
+  page.tsx                    useChat shell + VerdictCard render + approval buttons
   layout.tsx, globals.css
 
 lib/
-  dealwave-client.ts         Centralized fetch, Bearer auth, 30s timeout
-  hooks/approval.ts          reviewHook definition (Workflow SDK)
-  schemas/verdict.ts         Zod VerdictSchema (advisor target)
-  tools/                     analyze-deal, pull-comps, create-deal
-  workflows/deal-analyst.ts  dealReviewWorkflow (durable)
+  dealwave-client.ts          Centralized fetch, Bearer auth, 60s timeout (analyze pipeline
+                              can run 30-45s cold; 60s matches chat route maxDuration)
+  hooks/approval.ts           reviewHook definition (Workflow SDK)
+  schemas/verdict.ts          Zod VerdictSchema (advisor target, .nullable() for OpenAI strict)
+  tools/                      analyze-deal, pull-comps, create-deal (needsApproval),
+                              list-deals, update-deal, run-what-if (Sandbox)
+  workflows/deal-analyst.ts   dealReviewWorkflow ('use workflow' durable function)
 
 components/
-  ai-elements/               Conversation, Message, Tool, PromptInput, Shimmer…
-  dealwave/verdict-card.tsx  Banner + metric tiles + risks + follow-up chips
-  ui/                        shadcn primitives
+  ai-elements/                Vendored AI SDK component library (shadcn-style):
+                              Conversation, Message, Tool, PromptInput, Shimmer, …
+  dealwave/                   Project-specific UI:
+    primitives-inspector.tsx    Right-side AI Primitives inspector (5 layered groups:
+                                Engine / Runtime / Orchestration / Surface / Platform)
+                                with live activation dots + active-step card glow
+    verdict-card.tsx            Banner + metric tiles + risks + follow-up chips
+    tool-pill.tsx               Inline tool-call pills with shared expansion panel
+    approval-prompt.tsx         needsApproval "Action Required" card (amber accent)
+    monte-carlo-panel.tsx       Histogram + P10/P50/P90 figures from Sandbox results
+    what-if-histogram.tsx       run_what_if result renderer
+    gateway-bar.tsx             Empty-state Gateway/model attribution strip
+    model-selector.tsx          Research / Advisor / Backup model dropdowns
+    shimmer-block.tsx           "Building verdict…" placeholder during advisor wait
+    eval-badge.tsx              Eval status pill
+  ui/                         shadcn primitives
 
 evals/
-  run.ts                     Regression eval (research tool selection + advisor verdict)
-  test-cases.json            Three cases incl. one negative
+  run.ts                      Regression eval (research tool selection + advisor verdict)
+  test-cases.json             Cases including off-topic negative case (must NOT verdict)
+
+scripts/
+  sandbox-smoke.ts            Standalone Sandbox smoke test (spin up, install deps, exit)
 ```

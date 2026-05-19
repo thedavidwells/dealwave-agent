@@ -40,11 +40,15 @@ type MetricFormat =
 interface MetricTileData {
     label: string;
     value: number;
-    rangeLow?: number;
-    rangeHigh?: number;
+    // Nullable (not just optional) because the underlying Zod schema uses
+    // `.nullable()` for OpenAI strict-mode compatibility — the model emits
+    // `null` for tiles where the field doesn't apply. Consumers below treat
+    // null and undefined identically via truthy/`!= null` checks.
+    rangeLow?: number | null;
+    rangeHigh?: number | null;
     format: MetricFormat;
     health: Health;
-    context?: string;
+    context?: string | null;
 }
 
 interface RiskData {

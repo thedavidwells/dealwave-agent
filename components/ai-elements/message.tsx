@@ -356,19 +356,38 @@ const linkSafety = {
 // rel="noopener noreferrer" is mandatory whenever target="_blank":
 // without it, the opened tab gets a window.opener reference back to
 // the analyst tab, which is a tabnabbing vector.
+// Shared link styling — underlined, blue-accent matching the design
+// system. Streamdown's default <a> rendering doesn't underline links,
+// which makes "View this deal →" (and any other markdown link the model
+// emits) read as plain text instead of a clickable affordance.
+const linkClassName =
+  "underline underline-offset-2 transition-opacity hover:opacity-80";
+const linkStyle = {
+  color: "var(--dw-blue)",
+  textDecorationColor: "var(--dw-blue)",
+  textDecorationThickness: 1,
+} as const;
+
 const streamdownComponents = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  a: ({ href, children, ...rest }: any) => {
+  a: ({ href, children, className, style, ...rest }: any) => {
     const isInternal =
       typeof href === "string" &&
       href.startsWith("/") &&
       !href.startsWith("//");
+    // Merge our default link styling with anything the renderer or
+    // markdown plugin may have passed through. Caller-provided styles
+    // win — we're just setting the floor.
+    const mergedClassName = cn(linkClassName, className);
+    const mergedStyle = { ...linkStyle, ...(style ?? {}) };
     if (isInternal) {
       return (
         <a
           href={href}
           target="_blank"
           rel="noopener noreferrer"
+          className={mergedClassName}
+          style={mergedStyle}
           {...rest}
         >
           {children}
@@ -376,7 +395,12 @@ const streamdownComponents = {
       );
     }
     return (
-      <a href={href} {...rest}>
+      <a
+        href={href}
+        className={mergedClassName}
+        style={mergedStyle}
+        {...rest}
+      >
         {children}
       </a>
     );

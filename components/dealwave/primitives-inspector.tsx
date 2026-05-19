@@ -63,6 +63,37 @@ type IconComponent = ComponentType<{
     style?: CSSProperties;
 }>;
 
+// Architectural layers — bottom-of-stack to top. Used to group primitives
+// in the sidebar so a viewer can read the architecture at a glance instead
+// of inferring it from the order. Each card declares its layer; the render
+// groups them under labeled headers.
+type PrimitiveLayer =
+    | "engine"
+    | "runtime"
+    | "orchestration"
+    | "surface"
+    | "platform";
+
+const LAYER_LABEL: Record<PrimitiveLayer, string> = {
+    engine: "Engine",
+    runtime: "Agent runtime",
+    orchestration: "Orchestration",
+    surface: "Surface",
+    platform: "Platform",
+};
+
+// Render order of the layer groups. Mirrors the layered architecture
+// diagram so top of the sidebar = bottom of the stack (the engine that
+// everything talks to) and bottom of the sidebar = the highest-level
+// concerns (framework + quality guardrails).
+const LAYER_ORDER: PrimitiveLayer[] = [
+    "engine",
+    "runtime",
+    "orchestration",
+    "surface",
+    "platform",
+];
+
 type PrimitiveDef = {
     id: string;
     icon: IconComponent;
@@ -70,7 +101,18 @@ type PrimitiveDef = {
     description: string;
     file: string;
     code: string;
+    // Architectural layer for grouping in the sidebar. Optional during
+    // migration — primitives without a layer fall to the end ungrouped.
+    layer?: PrimitiveLayer;
+    // "Has this primitive ever fired in the current session?" — the
+    // green-dot predicate. Stays green for the rest of the session once true.
     activate: (msgs: InspectorMessage[]) => boolean;
+    // Optional "is this primitive in flight RIGHT NOW?" predicate. When
+    // true, the card gets a card-glow animation indicating active execution
+    // — distinguishes "ran 30s ago" from "running this very second." Omitted
+    // for always-on primitives (Next.js Rendering, Eval) where the
+    // distinction is meaningless.
+    activateLive?: (msgs: InspectorMessage[]) => boolean;
 };
 
 // ─── Activation predicates ──────────────────────────────────────────────
@@ -101,7 +143,75 @@ const hasToolWithOutput = (msgs: InspectorMessage[], toolType: string) =>
         ),
     );
 
+// ─── In-flight predicates (for activateLive) ───────────────────────────
+//
+// A tool part is "in flight" when its state is input-streaming (model is
+// emitting args) or input-available (args ready, execute() running). These
+// predicates power the active-NOW glow on a primitive card — distinct
+// from the static green dot which only tells you "ever fired this session."
+
+const hasInFlightToolPart = (msgs: InspectorMessage[]) =>
+    msgs.some((m) =>
+        m.parts?.some(
+            (p) =>
+                p.type?.startsWith("tool-") &&
+                (p.state === "input-streaming" || p.state === "input-available"),
+        ),
+    );
+
+const hasInFlightTool = (msgs: InspectorMessage[], toolType: string) =>
+    msgs.some((m) =>
+        m.parts?.some(
+            (p) =>
+                p.type === toolType &&
+                (p.state === "input-streaming" || p.state === "input-available"),
+        ),
+    );
+
+const hasPendingApproval = (msgs: InspectorMessage[]) =>
+    msgs.some((m) =>
+        m.parts?.some(
+            (p) =>
+                p.type?.startsWith("tool-") &&
+                p.state === "approval-requested",
+        ),
+    );
+
+// Advisor pending: research returned successfully but the structured
+// Verdict hasn't materialized yet. Indicates the advisor generateObject
+// call is currently running.
+const isAdvisorPending = (msgs: InspectorMessage[]) => {
+    const hasResearchOutput = msgs.some((m) =>
+        m.parts?.some(
+            (p) =>
+                (p.type === "tool-analyze_deal" ||
+                    p.type === "tool-pull_comps") &&
+                p.state === "output-available",
+        ),
+    );
+    const hasVerdict = msgs.some((m) =>
+        m.parts?.some((p) => p.type === "data-verdict"),
+    );
+    return hasResearchOutput && !hasVerdict;
+};
+
 // ─── The 10 primitives ─────────────────────────────────────────────────
+//
+// Order is INTENTIONAL — layered bottom-of-stack to top-of-stack so the
+// sidebar reads as an architecture diagram, not a chronological event log:
+//
+//   1.  AI Gateway        — the engine; every model call routes through it
+//   2.  AI SDK            — TypeScript lib that talks to the Gateway
+//   3.  ToolLoopAgent     — the loop pattern inside the SDK
+//   4.  Sandbox           — a tool the loop can call; isolated Python runtime
+//   5.  Structured Output — typed Verdict emitted at the end of the loop
+//   6.  Workflow + needsApproval — durable orchestration wrapping the runtime
+//   7.  useChat           — client-side streaming harness
+//   8.  AI Elements       — shadcn-style components on top of useChat
+//   9.  Next.js Rendering — page-level framework primitive (ISR)
+//   10. Eval              — CI guardrail outside the request runtime
+//
+// Read top-to-bottom and you can narrate the request path. That's the point.
 
 const PRIMITIVES: PrimitiveDef[] = [
     {
@@ -115,6 +225,7 @@ const PRIMITIVES: PrimitiveDef[] = [
 providerOptions: {
   gateway: { order: ["anthropic", "bedrock"] }
 }`,
+        layer: "engine",
         activate: hasAnyMessage,
     },
     {
@@ -130,6 +241,7 @@ providerOptions: {
   convertToModelMessages,
   stepCountIs,
 } from "ai";`,
+        layer: "engine",
         activate: hasAnyMessage,
     },
     {
@@ -145,7 +257,27 @@ providerOptions: {
            list_deals, run_what_if },
   stopWhen: stepCountIs(10),
 })`,
+        layer: "runtime",
         activate: hasAnyToolPart,
+        activateLive: hasInFlightToolPart,
+    },
+    {
+        id: "sandbox",
+        icon: Code2,
+        title: "Sandbox",
+        description:
+            "Isolated python3.13 runtime for compute that doesn't fit in Edge. run_what_if spawns a sandbox, installs numpy + matplotlib, runs 10k Monte Carlo trials, and returns P10/P50/P90 + histogram PNG.",
+        file: "lib/tools/run-what-if.ts",
+        code: `const sandbox = await Sandbox.create({
+  runtime: "python3.13",
+  timeout: 90_000,
+});
+await sandbox.runCommand({
+  cmd: "pip", args: ["install", "numpy", "matplotlib"],
+});`,
+        layer: "runtime",
+        activate: (msgs) => hasToolWithOutput(msgs, "tool-run_what_if"),
+        activateLive: (msgs) => hasInFlightTool(msgs, "tool-run_what_if"),
     },
     {
         id: "structured-output",
@@ -159,7 +291,9 @@ providerOptions: {
   schema: VerdictSchema,
   prompt: \`Produce a Verdict from: \${results}\`,
 });`,
+        layer: "runtime",
         activate: (msgs) => hasDataPart(msgs, "data-verdict"),
+        activateLive: isAdvisorPending,
     },
     {
         id: "workflow-sdk",
@@ -176,23 +310,9 @@ const reviewHook = defineHook<{
 }>();
 
 await reviewHook.create({ token: dealId });`,
+        layer: "orchestration",
         activate: hasApprovalPart,
-    },
-    {
-        id: "sandbox",
-        icon: Code2,
-        title: "Sandbox",
-        description:
-            "Isolated python3.13 runtime for compute that doesn't fit in Edge. run_what_if spawns a sandbox, installs numpy + matplotlib, runs 10k Monte Carlo trials, and returns P10/P50/P90 + histogram PNG.",
-        file: "lib/tools/run-what-if.ts",
-        code: `const sandbox = await Sandbox.create({
-  runtime: "python3.13",
-  timeout: 90_000,
-});
-await sandbox.runCommand({
-  cmd: "pip", args: ["install", "numpy", "matplotlib"],
-});`,
-        activate: (msgs) => hasToolWithOutput(msgs, "tool-run_what_if"),
+        activateLive: hasPendingApproval,
     },
     {
         id: "use-chat",
@@ -208,6 +328,7 @@ await sandbox.runCommand({
   transport: new DefaultChatTransport({ api: "/api/chat" }),
   sendAutomaticallyWhen: ...,
 });`,
+        layer: "surface",
         activate: hasAnyMessage,
     },
     {
@@ -221,25 +342,8 @@ await sandbox.runCommand({
   Conversation, ConversationContent,
 } from "@/components/ai-elements/conversation";
 import { MessageResponse } from "@/components/ai-elements/message";`,
+        layer: "surface",
         activate: hasAnyMessage,
-    },
-    {
-        id: "eval",
-        icon: CheckCircle2,
-        title: "Eval (CI-Gate Pattern)",
-        description:
-            "Regression test set with gold expected tools + recommendations. Asserts (1) right tools called in right order, (2) recommendation matches gold. Passes today, would block deploy on regression.",
-        file: "evals/run.ts, evals/test-cases.json",
-        code: `for (const c of cases) {
-  const result = await runAgent(c.prompt);
-  assert.ok(
-    c.expectedTools.every(t => result.tools.includes(t))
-  );
-  assert.equal(
-    result.verdict.recommendation, c.expected
-  );
-}`,
-        activate: () => true,
     },
     {
         id: "nextjs-rendering",
@@ -257,6 +361,26 @@ export default async function DealPage({
   const deal = await fetchDeal(id);
   return <DealDetail deal={deal} />;
 }`,
+        layer: "platform",
+        activate: () => true,
+    },
+    {
+        id: "eval",
+        icon: CheckCircle2,
+        title: "Eval (CI-Gate Pattern)",
+        description:
+            "Regression test set with gold expected tools + recommendations. Asserts (1) right tools called in right order, (2) recommendation matches gold. Passes today, would block deploy on regression.",
+        file: "evals/run.ts, evals/test-cases.json",
+        code: `for (const c of cases) {
+  const result = await runAgent(c.prompt);
+  assert.ok(
+    c.expectedTools.every(t => result.tools.includes(t))
+  );
+  assert.equal(
+    result.verdict.recommendation, c.expected
+  );
+}`,
+        layer: "platform",
         activate: () => true,
     },
 ];
@@ -277,10 +401,13 @@ export function PrimitivesInspector({
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
     // Compute activation up-front so the X/10 counter and the dot color
-    // can read from the same source of truth.
+    // can read from the same source of truth. activeLive is the "in flight
+    // RIGHT NOW" signal — drives the card-glow animation that highlights
+    // exactly which primitive is currently working.
     const states = PRIMITIVES.map((p) => ({
         ...p,
         active: p.activate(messages),
+        activeLive: p.activateLive?.(messages) ?? false,
     }));
     const activeCount = states.filter((s) => s.active).length;
 
@@ -308,12 +435,10 @@ export function PrimitivesInspector({
                 top: 49,
                 width: 400,
                 background: "var(--dw-surface)",
-                borderLeft: "1px solid var(--dw-border)",
-                // No box-shadow — earlier `-12px 0 32px` blurred symmetrically
-                // around the top edge, which made a faint vertical haze leak
-                // up into the page header area. The 1px border + the contrast
-                // between var(--dw-surface) and the page background is
-                // enough visual separation; clean trumps clever here.
+                // No left border, no box-shadow. The contrast between
+                // var(--dw-surface) and var(--dw-bg) is enough to define
+                // the drawer edge. A 1px border felt like UI clutter against
+                // the chat pane next to it; removed for a cleaner read.
             }}
         >
             {/* ─── Header ────────────────────────────────────────────── */}
@@ -373,13 +498,47 @@ export function PrimitivesInspector({
                 style={{ padding: "0 12px 16px", gap: 8 }}
             >
                 <div className="flex flex-col" style={{ gap: 8 }}>
-                    {states.map((p) => {
+                    {LAYER_ORDER.map((layer, groupIndex) => {
+                        const cardsInLayer = states.filter(
+                            (s) => s.layer === layer,
+                        );
+                        if (cardsInLayer.length === 0) return null;
+                        return (
+                            <div
+                                key={layer}
+                                className="flex flex-col"
+                                style={{ gap: 8 }}
+                            >
+                                {/* Layer header — small, tight, semibold so it
+                                    reads as an architectural label, not a heading.
+                                    Top margin only on non-first groups creates
+                                    visual breathing room between layers. */}
+                                <div
+                                    className="text-[10px] font-semibold uppercase"
+                                    style={{
+                                        letterSpacing: "0.12em",
+                                        color: "var(--dw-dim)",
+                                        marginTop: groupIndex === 0 ? 0 : 14,
+                                        marginBottom: 2,
+                                        paddingLeft: 4,
+                                    }}
+                                >
+                                    {LAYER_LABEL[layer]}
+                                </div>
+                                {cardsInLayer.map((p) => {
                         const Icon = p.icon;
                         const isOpen = expanded.has(p.id);
+                        // When a primitive is in flight RIGHT NOW (not just
+                        // ever-fired), the card gets the animate-card-glow
+                        // class so the eye lands on exactly what's running
+                        // this very second.
                         return (
                             <div
                                 key={p.id}
-                                className="rounded-md overflow-hidden"
+                                className={cn(
+                                    "rounded-md overflow-hidden",
+                                    p.activeLive && "animate-card-glow",
+                                )}
                                 style={{
                                     background: "var(--dw-surface-1)",
                                     border: "1px solid var(--dw-border)",
@@ -395,7 +554,10 @@ export function PrimitivesInspector({
                                     }}
                                     aria-expanded={isOpen}
                                 >
-                                    {/* Activation dot */}
+                                    {/* Activation dot — green when primitive has
+                                        ever fired this session; pulse animation
+                                        runs only when active so gray dots stay
+                                        still. */}
                                     <span
                                         aria-label={
                                             p.active
@@ -405,7 +567,7 @@ export function PrimitivesInspector({
                                         className={cn(
                                             "rounded-full flex-shrink-0 transition-colors",
                                             p.active
-                                                ? "bg-emerald-400"
+                                                ? "bg-emerald-400 animate-dot-pulse"
                                                 : "bg-zinc-700",
                                         )}
                                         style={{ width: 6, height: 6 }}
@@ -487,6 +649,9 @@ export function PrimitivesInspector({
                                         </p>
                                     </div>
                                 )}
+                            </div>
+                        );
+                    })}
                             </div>
                         );
                     })}

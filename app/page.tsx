@@ -368,15 +368,35 @@ export default function Home() {
             {/* ── Prompt input + model selector strip ───────────────────
                 Hidden in the empty state — the EmptyState renders its own
                 input mock that delegates to the same sendMessage. Once a
-                conversation is underway this real PromptInput takes over. */}
+                conversation is underway this real PromptInput takes over.
+                No top border — replaced with a gradient fade overlay below
+                so chat content appears to scroll behind the input instead
+                of stopping at a hard divider. */}
             {!isEmpty && (
                 <div
                     className="relative z-10"
                     style={{
-                        borderTop: "1px solid var(--dw-border)",
                         background: "var(--dw-bg)",
                     }}
                 >
+                    {/* Gradient fade — sits 64px ABOVE the input wrapper
+                        (bottom: 100%) so it overlaps the bottom of the
+                        conversation area. Fades from transparent at the
+                        top to var(--dw-bg) at the bottom, with the solid
+                        color landing at 90% so the last few pixels are
+                        fully opaque (matches the input's solid bg cleanly).
+                        pointer-events-none so it doesn't intercept clicks
+                        or block scroll-through into the conversation. */}
+                    <div
+                        aria-hidden
+                        className="pointer-events-none absolute left-0 right-0"
+                        style={{
+                            bottom: "100%",
+                            height: 64,
+                            background:
+                                "linear-gradient(to bottom, transparent 0%, var(--dw-bg) 90%)",
+                        }}
+                    />
                     <div
                         className="mx-auto w-full"
                         style={{ maxWidth: 720, padding: "12px 16px" }}
@@ -649,7 +669,7 @@ function ChatStream({
         <Conversation className="flex-1">
             <ConversationContent
                 className="mx-auto"
-                style={{ maxWidth: 720, padding: "24px 16px" }}
+                style={{ maxWidth: 720, padding: "24px 16px 96px" }}
             >
                 {messages.map((m, mi) => {
                     // Collect this message's tool parts for the strip.
@@ -665,21 +685,22 @@ function ChatStream({
                     // shape. `getToolName` strips the 'tool-' prefix.
                     //
                     // The SDK exposes a broader state union than the pill
-                    // component knows about — `approval-responded` and
-                    // `output-denied` are runtime transitions that don't
-                    // need their own visual variants. We collapse them to
-                    // the closest existing variant so the pill keeps the
-                    // user informed without us shipping new design work:
-                    //   - approval-responded → input-available (the tool
-                    //     is now allowed to execute and we're waiting on
-                    //     output, mirrors the post-input-pre-output state)
+                    // component knows about. We collapse the runtime-only
+                    // transitions to the closest existing visual variant:
+                    //   - approval-responded → output-available. The user
+                    //     already approved; the gate they care about is
+                    //     cleared. Showing a spinner here is misleading —
+                    //     the actual tool execution emits its own
+                    //     output-available part downstream. (Earlier we
+                    //     mapped this to input-available, which left the
+                    //     pill stuck on a spinner indefinitely — bad demo.)
                     //   - output-denied → output-error (user declined the
                     //     approval; visually we want a "this didn't run"
                     //     marker, which the error variant provides)
                     const stripParts = toolParts.map((p) => {
                         const state =
                             p.state === "approval-responded"
-                                ? ("input-available" as const)
+                                ? ("output-available" as const)
                                 : p.state === "output-denied"
                                   ? ("output-error" as const)
                                   : p.state;
