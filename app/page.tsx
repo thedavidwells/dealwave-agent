@@ -121,7 +121,15 @@ export default function Home() {
     // SSR/CSR mismatch.
     const [inspectorOpen, setInspectorOpen] = useState(false);
     useEffect(() => {
+        // One-shot hydration from localStorage post-mount. We can't read
+        // localStorage during SSR (server has no window), so we read it
+        // here in a [] effect to seed the initial open/closed preference.
+        // Lint flags setState-in-effect because in general it can cause
+        // cascading renders — here it's intentional and one-shot, so the
+        // suppression is documented rather than refactored to a more
+        // complex pattern (useSyncExternalStore would work but adds noise).
         const stored = window.localStorage.getItem("dw:inspector-open");
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         if (stored === "1") setInspectorOpen(true);
     }, []);
 

@@ -348,7 +348,7 @@ export const runWhatIfTool = tool({
             let result: Record<string, unknown>;
             try {
                 result = JSON.parse(stdout);
-            } catch (err) {
+            } catch {
                 return {
                     error: true,
                     message: "Failed to parse Python output as JSON",

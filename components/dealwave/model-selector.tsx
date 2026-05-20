@@ -113,6 +113,11 @@ export function useModelSelection() {
     const [models, setModels] = React.useState<ModelSelection>(DEFAULT_MODELS);
 
     React.useEffect(() => {
+        // One-shot hydration from localStorage post-mount. Same pattern as
+        // the inspector toggle in app/page.tsx — SSR can't read localStorage,
+        // so we seed here. Lint flags this in general but it's the canonical
+        // pattern for SSR-safe local persistence; documented suppression.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setModels(readPersisted());
     }, []);
 
