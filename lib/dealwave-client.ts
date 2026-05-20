@@ -63,7 +63,7 @@ export async function dealWaveFetch<T = unknown>(
     // landed in /api/v1/analyze — observed real analyze calls taking
     // 30-45s end-to-end on cold cache after that change. Bumped from 30s
     // to give the slower pipeline headroom; the chat route's maxDuration
-    // is 60s so longer would just timeout at the function boundary.
+    // is 120s so multi-tool turns still have room for the advisor step.
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
 
@@ -123,7 +123,7 @@ export async function dealWaveFetch<T = unknown>(
         };
     } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
-            return { ok: false, error: "Request timed out after 30 seconds" };
+            return { ok: false, error: "Request timed out after 60 seconds" };
         }
         return {
             ok: false,

@@ -13,6 +13,20 @@
 
 "use client";
 
+// components/dealwave/what-if-histogram.tsx
+//
+// Two exports:
+//   WhatIfHistogram   — pure data card (chart + stat tiles). No actions.
+//   WhatIfFollowUps   — chip strip rendered SEPARATELY, always after all
+//                       message text so it lands at the bottom of the turn.
+//
+// We deliberately keep these two components separate so the chip row
+// never appears mid-message above the model's follow-up analysis text.
+// The histogram is a tool part; tool parts render before text parts in
+// the AI SDK message stream. If we put chips inside the card they'd
+// always sit above whatever the model says next.
+
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 // The shape returned by the run_what_if tool's execute function. Kept loose
@@ -79,6 +93,33 @@ function Stat({
     );
 }
 
+// Chip definitions for WhatIfFollowUps. Defined at module level so they
+// don't re-allocate on every render.
+const WHAT_IF_CHIPS: Array<{
+    label: string;
+    message: string;
+    tone: "primary" | "default";
+}> = [
+    {
+        label: "💾 Save to pipeline",
+        message: "Save this deal to my pipeline",
+        tone: "primary",
+    },
+    {
+        label: "⚡ Stress test harder",
+        message:
+            "Re-run the Monte Carlo with aggressive assumptions — 25% ARV swing and 60% repair overrun",
+        tone: "default",
+    },
+    {
+        label: "📊 Pull comps",
+        message: "Pull comps to validate the ARV estimate",
+        tone: "default",
+    },
+];
+
+// WhatIfHistogram — pure data display. No action chips.
+// Chips live in WhatIfFollowUps (rendered separately after all message text).
 export function WhatIfHistogram({ output }: { output: RunWhatIfOutput }) {
     const lossPct = output.probability_of_loss * 100;
     const lossTone =
@@ -138,6 +179,130 @@ export function WhatIfHistogram({ output }: { output: RunWhatIfOutput }) {
                     {output.interpretation}
                 </p>
             )}
+        </div>
+    );
+}
+
+// WhatIfFollowUps — action chips rendered AFTER all message text.
+// Kept separate from WhatIfHistogram so the chip row always lands at the
+// bottom of the assistant turn, below whatever prose the model streams.
+// (Histogram is a tool part → always renders before text parts in the
+// AI SDK message stream. Chips inside the card would appear mid-message.)
+export function WhatIfFollowUps({
+    onFollowUp,
+    onNewAnalysis,
+}: {
+    onFollowUp: (text: string) => void;
+    onNewAnalysis: () => void;
+}) {
+    // 350ms gate then staggered pop — mirrors VerdictCard chip animation
+    // so the two card types feel like design siblings.
+    const [visible, setVisible] = useState(false);
+    useEffect(() => {
+        const t = setTimeout(() => setVisible(true), 350);
+        return () => clearTimeout(t);
+    }, []);
+
+    return (
+        <div
+            className="flex flex-wrap"
+            style={{
+                gap: 6,
+                paddingTop: 10,
+                marginTop: 6,
+                borderTop: "1px solid var(--dw-border)",
+            }}
+        >
+            {WHAT_IF_CHIPS.map((chip, i) => (
+                <button
+                    key={chip.label}
+                    type="button"
+                    onClick={() => onFollowUp(chip.message)}
+                    className={visible ? "dw-followup-chip animate-chip-pop" : "dw-followup-chip"}
+                    style={{
+                        padding: "5px 13px",
+                        borderRadius: 20,
+                        background:
+                            chip.tone === "primary"
+                                ? "rgba(34,197,94,0.08)"
+                                : "rgba(255,255,255,0.05)",
+                        border:
+                            chip.tone === "primary"
+                                ? "1px solid rgba(34,197,94,0.28)"
+                                : "1px solid var(--dw-border-md)",
+                        color:
+                            chip.tone === "primary"
+                                ? "var(--dw-green)"
+                                : "var(--dw-sub)",
+                        fontSize: 12,
+                        cursor: "pointer",
+                        transition: "background 0.12s, border-color 0.12s, color 0.12s",
+                        opacity: visible ? undefined : 0,
+                        animationDelay: visible ? `${i * 55}ms` : undefined,
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background =
+                            chip.tone === "primary"
+                                ? "rgba(34,197,94,0.14)"
+                                : "rgba(255,255,255,0.09)";
+                        e.currentTarget.style.borderColor =
+                            chip.tone === "primary"
+                                ? "rgba(34,197,94,0.45)"
+                                : "var(--dw-border-str)";
+                        e.currentTarget.style.color =
+                            chip.tone === "primary"
+                                ? "var(--dw-green)"
+                                : "var(--dw-text)";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background =
+                            chip.tone === "primary"
+                                ? "rgba(34,197,94,0.08)"
+                                : "rgba(255,255,255,0.05)";
+                        e.currentTarget.style.borderColor =
+                            chip.tone === "primary"
+                                ? "rgba(34,197,94,0.28)"
+                                : "var(--dw-border-md)";
+                        e.currentTarget.style.color =
+                            chip.tone === "primary"
+                                ? "var(--dw-green)"
+                                : "var(--dw-sub)";
+                    }}
+                >
+                    {chip.label}
+                </button>
+            ))}
+
+            {/* New analysis — muted/terminal style, animates last */}
+            <button
+                type="button"
+                onClick={onNewAnalysis}
+                className={visible ? "dw-followup-chip animate-chip-pop" : "dw-followup-chip"}
+                style={{
+                    padding: "5px 13px",
+                    borderRadius: 20,
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid var(--dw-border)",
+                    color: "var(--dw-dim)",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    transition: "background 0.12s, border-color 0.12s, color 0.12s",
+                    opacity: visible ? undefined : 0,
+                    animationDelay: visible ? `${WHAT_IF_CHIPS.length * 55}ms` : undefined,
+                }}
+                onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                    e.currentTarget.style.borderColor = "var(--dw-border-md)";
+                    e.currentTarget.style.color = "var(--dw-sub)";
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                    e.currentTarget.style.borderColor = "var(--dw-border)";
+                    e.currentTarget.style.color = "var(--dw-dim)";
+                }}
+            >
+                ↩ New analysis
+            </button>
         </div>
     );
 }

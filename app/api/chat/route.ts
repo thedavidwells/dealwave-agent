@@ -15,18 +15,22 @@ import { runWhatIfTool } from "@/lib/tools/run-what-if";
 import { updateDealTool } from "@/lib/tools/update-deal";
 import { VerdictSchema } from "@/lib/schemas/verdict";
 
-// (We'll leave the runtime as Node.js default for now.
-// Edge runtime would also work for streaming, but Workflow SDK will require node.)
-//
 // This handler streams live model output and tool results, so we do not
 // try to cache it. No special segment config is needed — route handlers
 // that produce per-request SSE are naturally request-time work.
+//
+// Keep this explicit for Vercel: the chat route uses Workflow SDK startup
+// after create_deal and the run_what_if tool launches Vercel Sandbox, both
+// of which require the full Node.js runtime rather than Edge isolates.
+export const runtime = "nodejs";
 
-// Allow up to 60s for the full research loop + advisor step.
-// (Default Next.js function timeout on Hobby/Pro is 10s - we need more because
-// analyse_deal alone can take 15-30s seconds on first time properties, and the
-// advisor step adds another ~2-5s after the research loop completes.)
-export const maxDuration = 60;
+// Allow up to 120s for the full research loop + advisor step.
+// We need headroom because analyze_deal can take 15-30s on first-time
+// properties, run_what_if can spend 30-60s in Sandbox cold-start + pip
+// install, and the advisor step adds another few seconds after research.
+// Setting this below the Sandbox timeout (90s) caused the route to kill the
+// HTTP connection while the sandbox was still running.
+export const maxDuration = 120;
 
 // Allowlist of models the client is permitted to pick. Server-side
 // validation is the source of truth — anything the client sends that
@@ -57,6 +61,17 @@ const DEFAULT_RESEARCH: (typeof ALLOWED_RESEARCH)[number] =
 const DEFAULT_ADVISOR: (typeof ALLOWED_ADVISOR)[number] =
     "anthropic/claude-sonnet-4-6";
 const DEFAULT_BACKUP: (typeof ALLOWED_BACKUP)[number] = "none";
+const TOOL_NAMES = [
+    "analyze_deal",
+    "pull_comps",
+    "create_deal",
+    "list_deals",
+    "run_what_if",
+    "update_deal",
+] as const;
+const TOOL_NAMES_AFTER_CREATE_DEAL = TOOL_NAMES.filter(
+    (toolName) => toolName !== "create_deal",
+);
 
 function pickAllowed<T extends readonly string[]>(
     candidate: unknown,
@@ -286,9 +301,12 @@ export async function POST(request: Request) {
                     estimate. Trigger phrases: "how risky is this deal?", "what's the
                     downside?", "what if repairs come in higher?", "sensitivity
                     analysis", "monte carlo", "stress test", "show me the distribution".
-                    The baseline values (arv, purchase_price, repairs) MUST come from
-                    the most recent analyze_deal result for this address — never
-                    invent them. Map analyze_deal fields to the tool's baseline:
+
+                    CRITICAL — do NOT call analyze_deal before run_what_if when the
+                    property was already analyzed earlier in this conversation. The
+                    values are already in context. Calling analyze_deal again wastes
+                    credits and produces a redundant second verdict card. Pull the
+                    baseline values directly from the prior analyze_deal result:
                       arv             ← analyze_deal.arvEstimate
                       purchase_price  ← analyze_deal.listingPrice (if present) else mao
                       repairs         ← analyze_deal.estimatedRepairs
@@ -339,6 +357,36 @@ export async function POST(request: Request) {
                 // → update_deal" (six tool turns + narration).
                 stopWhen: stepCountIs(12),
 
+                // AI SDK approvals are a two-call flow:
+                //   1. model requests create_deal → UI asks for approval
+                //   2. user approves → server executes create_deal, then the
+                //      model gets one more step to write the confirmation
+                //
+                // That second step must not be allowed to call create_deal
+                // again for the same approved save. If the model sees the
+                // original "save this" user text plus the fresh tool result, it
+                // can occasionally re-issue create_deal before writing prose.
+                // Once the current step input already ends with a create_deal
+                // result, keep every other tool available but remove create_deal
+                // for the confirmation step.
+                prepareStep: ({ messages: stepMessages }) => {
+                    const lastMessage = stepMessages.at(-1);
+                    const lastContent = Array.isArray(lastMessage?.content)
+                        ? lastMessage.content
+                        : [];
+                    const justExecutedCreateDeal = lastContent.some(
+                        (part) =>
+                            part.type === "tool-result" &&
+                            part.toolName === "create_deal",
+                    );
+
+                    if (!justExecutedCreateDeal) return undefined;
+
+                    return {
+                        activeTools: TOOL_NAMES_AFTER_CREATE_DEAL,
+                    };
+                },
+
                 // Per-step telemetry. Logs which research model handled
                 // each step and how many tokens it consumed — useful for
                 // an AI Gateway routing chip in the footer (model +
@@ -366,7 +414,7 @@ export async function POST(request: Request) {
             // Wait for the research loop to finish — we need its tool
             // results in the conversation history for the advisor to
             // build a verdict from.
-            const finalResponse = await toolLoop.response;
+            await toolLoop.response;
 
             // ────────────────────────────────────────────────────────────
             // STEP 2: Advisor verdict (structured output)
@@ -403,29 +451,38 @@ export async function POST(request: Request) {
             // both issues and gives the advisor a focused input.
             const analysisResults: { tool: string; output: unknown }[] = [];
             let touchedCreateDeal = false;
+            let hasRunWhatIf = false;
 
-            for (const m of finalResponse.messages) {
-                if (!Array.isArray(m.content)) continue;
-                for (const part of m.content as Array<{
-                    type: string;
-                    toolName?: string;
-                    output?: unknown;
-                }>) {
-                    if (
-                        part.type === "tool-result" &&
-                        (part.toolName === "analyze_deal" ||
-                            part.toolName === "pull_comps")
-                    ) {
+            // IMPORTANT: response.messages only contains the LAST step's messages
+            // (the final text-generation step after all tool calls complete). The
+            // analyze_deal / pull_comps results live in earlier steps. We must
+            // iterate all steps via toolLoop.steps to find them.
+            const allSteps = await toolLoop.steps;
+            for (const step of allSteps) {
+                for (const result of step.toolResults) {
+                    const toolName = result.toolName;
+                    if (toolName === "analyze_deal" || toolName === "pull_comps") {
                         analysisResults.push({
-                            tool: part.toolName,
-                            output: part.output,
+                            tool: toolName,
+                            output: result.output,
                         });
                     }
-                    if (part.toolName === "create_deal") {
+                    if (toolName === "create_deal") {
                         touchedCreateDeal = true;
+                    }
+                    if (toolName === "run_what_if") {
+                        hasRunWhatIf = true;
                     }
                 }
             }
+
+            // NOTE: We intentionally do NOT fall back to conversation history
+            // for analyze_deal results when this is a pure MC follow-up turn
+            // (run_what_if ran but analyze_deal didn't). Doing so caused the
+            // advisor to produce a *second* verdict card after every Monte Carlo
+            // stress-test, duplicating the one that already appeared after the
+            // original analysis. The MC histogram + model prose is sufficient
+            // output for a follow-up; no new verdict card is needed or expected.
 
             // Skip the advisor when there's no *successful* analysis to
             // summarize. The agent's tools emit { error: true, ... } envelopes
@@ -443,6 +500,15 @@ export async function POST(request: Request) {
                 return out != null && out.error !== true;
             });
             const shouldAdvise = hasSuccessfulAnalysis && !touchedCreateDeal;
+
+            console.log("[advisor-gate]", {
+                steps: allSteps.length,
+                analysisResultCount: analysisResults.length,
+                hasRunWhatIf,
+                hasSuccessfulAnalysis,
+                touchedCreateDeal,
+                shouldAdvise,
+            });
 
             if (shouldAdvise) {
                 try {

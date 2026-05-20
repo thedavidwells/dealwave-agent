@@ -19,6 +19,12 @@ import { Suspense } from "react";
 
 import { dealWaveFetch } from "@/lib/dealwave-client";
 
+// Force request-time rendering. Without this explicit segment config, Next can
+// prerender the page at build time because the data fetch is hidden behind our
+// DealWave client wrapper, which would make newly saved deals invisible until a
+// rebuild. The Vercel conformance rule also prefers explicit dynamic intent.
+export const dynamic = "force-dynamic";
+
 // ─── Design tokens (match /deals/[id] for visual consistency) ──────────
 
 const C = {

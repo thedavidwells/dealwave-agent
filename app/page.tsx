@@ -19,7 +19,6 @@ import { useChat } from "@ai-sdk/react";
 import {
     isToolUIPart,
     getToolName,
-    lastAssistantMessageIsCompleteWithToolCalls,
     lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
 import { PlusIcon, Zap } from "lucide-react";
@@ -64,6 +63,7 @@ import { ApprovalPrompt } from "@/components/dealwave/approval-prompt";
 import { ShimmerBlock } from "@/components/dealwave/shimmer-block";
 import {
     WhatIfHistogram,
+    WhatIfFollowUps,
     isRunWhatIfOutput,
 } from "@/components/dealwave/what-if-histogram";
 import { PrimitivesInspector } from "@/components/dealwave/primitives-inspector";
@@ -83,16 +83,29 @@ export default function Home() {
     // the conversation in-place without a full page reload.
     const { messages, sendMessage, setMessages, status, addToolApprovalResponse } =
         useChat({
-            // Fire the resume request when EITHER:
-            //   - all client-side tool calls have outputs (future-proofing
-            //     for client-side tools we may add), OR
-            //   - all pending approvals have been answered (our create_deal
-            //     case — needsApproval pauses the loop until the user clicks
-            //     Save or Skip in ApprovalPrompt).
-            // Approvals and outputs are tracked separately by the SDK, so we
-            // OR the two predicates to cover both resume paths.
+            // Fire the resume request only when all pending approvals have
+            // been answered — this is the create_deal needsApproval gate.
+            //
+            // We previously also OR'd in lastAssistantMessageIsCompleteWithToolCalls
+            // as future-proofing for client-side tools. That was the source of
+            // the double create_deal bug:
+            //
+            //   1. Model streams "I'll save this…" + calls create_deal
+            //   2. Streaming ends → approval-requested state
+            //   3. lastAssistantMessageIsCompleteWithToolCalls fires (streaming
+            //      is "complete" even though the tool has no output yet)
+            //   4. Premature auto-send → server sees create_deal with no result
+            //   5. Model calls create_deal AGAIN in a new turn
+            //   6. User approves → lastAssistantMessageIsCompleteWithApprovalResponses
+            //      fires → second create_deal executes → deal saved
+            //   Result: two create_deal pills, deal potentially saved twice
+            //
+            // All our tools are server-side (execute() runs on the server,
+            // results stream back inline). The only reason sendAutomaticallyWhen
+            // needs to fire at all is the approval gate on create_deal.
+            // lastAssistantMessageIsCompleteWithApprovalResponses alone is
+            // sufficient and fires at exactly the right time.
             sendAutomaticallyWhen: ({ messages }) =>
-                lastAssistantMessageIsCompleteWithToolCalls({ messages }) ||
                 lastAssistantMessageIsCompleteWithApprovalResponses({
                     messages,
                 }),
@@ -366,6 +379,7 @@ export default function Home() {
                     status={status}
                     expandedToolCallId={expandedToolCallId}
                     setExpandedToolCallId={setExpandedToolCallId}
+                    setMessages={setMessages}
                     addToolApprovalResponse={addToolApprovalResponse}
                     onFollowUp={(prompt) =>
                         sendMessage({ text: prompt }, { body: { models } })
@@ -661,6 +675,7 @@ function ChatStream({
     status,
     expandedToolCallId,
     setExpandedToolCallId,
+    setMessages,
     addToolApprovalResponse,
     onFollowUp,
 }: {
@@ -668,6 +683,7 @@ function ChatStream({
     status: ReturnType<typeof useChat>["status"];
     expandedToolCallId: string | null;
     setExpandedToolCallId: (id: string | null) => void;
+    setMessages: ReturnType<typeof useChat>["setMessages"];
     addToolApprovalResponse: ReturnType<
         typeof useChat
     >["addToolApprovalResponse"];
@@ -689,6 +705,26 @@ function ChatStream({
                         m.parts?.filter((p): p is ToolPart => isToolUIPart(p)) ??
                         [];
 
+                    // If a needsApproval tool completes, AI SDK v6 keeps the
+                    // original approval-response part and streams the actual
+                    // tool result as a later part. Rendering both as green
+                    // create_deal pills makes a single approved save look like
+                    // a duplicate save. Hide the old approval-response pill
+                    // once its real result exists later in the conversation.
+                    const completedToolCallIds = new Set(
+                        messages
+                            .slice(mi + 1)
+                            .flatMap((laterMessage) =>
+                                laterMessage.parts?.filter(isToolUIPart) ?? [],
+                            )
+                            .filter(
+                                (part) =>
+                                    part.state === "output-available" &&
+                                    getToolName(part) === "create_deal",
+                            )
+                            .map((part) => part.toolCallId),
+                    );
+
                     // Map AI SDK tool parts onto the ToolPillStrip's input
                     // shape. `getToolName` strips the 'tool-' prefix.
                     //
@@ -705,7 +741,15 @@ function ChatStream({
                     //   - output-denied → output-error (user declined the
                     //     approval; visually we want a "this didn't run"
                     //     marker, which the error variant provides)
-                    const stripParts = toolParts.map((p) => {
+                    const stripParts = toolParts.flatMap((p) => {
+                        const toolName = getToolName(p);
+                        if (
+                            p.state === "approval-responded" &&
+                            toolName === "create_deal" &&
+                            completedToolCallIds.has(p.toolCallId)
+                        ) {
+                            return [];
+                        }
                         const state =
                             p.state === "approval-responded"
                                 ? ("output-available" as const)
@@ -714,7 +758,7 @@ function ChatStream({
                                   : p.state;
                         return {
                             toolCallId: p.toolCallId,
-                            toolName: getToolName(p),
+                            toolName,
                             state,
                             input: p.input,
                             output:
@@ -752,12 +796,35 @@ function ChatStream({
                     );
                     const hasVerdict =
                         m.parts?.some((p) => p.type === "data-verdict") ?? false;
+                    // showAdvising: research done, advisor hasn't emitted verdict yet.
+                    // Only fires when analyze_deal/pull_comps ran THIS turn — pure
+                    // MC follow-up turns don't produce a verdict card (the original
+                    // one is already in the conversation), so no shimmer is needed.
+                    // The MC cold-start wait is covered by showMonteCarloPending.
                     const showAdvising =
                         isLast &&
                         m.role === "assistant" &&
                         status === "streaming" &&
                         hasAnalysisResult &&
                         !hasVerdict;
+
+                    // Detect "Monte Carlo pending" — run_what_if is in-flight
+                    // (sandbox cold-start + pip install can take 30-60s).
+                    // Without this, the only visible signal is a tiny spinner
+                    // in the tool pill chip — which reads as "stuck" to anyone
+                    // who hasn't internalized the pill system. The shimmer makes
+                    // the wait feel intentional and surfaces the Sandbox primitive.
+                    const hasWhatIfRunning = toolParts.some(
+                        (p) =>
+                            (p.state === "input-streaming" ||
+                                p.state === "input-available") &&
+                            getToolName(p) === "run_what_if",
+                    );
+                    const showMonteCarloPending =
+                        isLast &&
+                        m.role === "assistant" &&
+                        status === "streaming" &&
+                        hasWhatIfRunning;
 
                     return (
                         <Message key={m.id} from={m.role}>
@@ -805,6 +872,10 @@ function ChatStream({
                                             part as { output?: unknown }
                                         ).output;
                                         if (isRunWhatIfOutput(output)) {
+                                            // No callbacks here — chips live in
+                                            // WhatIfFollowUps below the parts
+                                            // map so they always render after
+                                            // the model's analysis text.
                                             return (
                                                 <WhatIfHistogram
                                                     key={i}
@@ -843,6 +914,31 @@ function ChatStream({
                                     // data-* types) — skip silently.
                                     return null;
                                 })}
+
+                                {/* Monte Carlo follow-up chips — rendered
+                                    AFTER all parts so they always sit below
+                                    the model's analysis text. WhatIfHistogram
+                                    is a tool part → it renders before text
+                                    parts in the SDK stream, so chips inside
+                                    the card would appear mid-message above
+                                    whatever prose the model streams next.
+                                    Only shown once the response is complete
+                                    (status === "ready" or not the last msg). */}
+                                {m.role === "assistant" &&
+                                    (!isLast || status === "ready") &&
+                                    toolParts.some(
+                                        (p) =>
+                                            getToolName(p) === "run_what_if" &&
+                                            p.state === "output-available",
+                                    ) && (
+                                        <WhatIfFollowUps
+                                            onFollowUp={onFollowUp}
+                                            onNewAnalysis={() => {
+                                                setMessages([]);
+                                                setExpandedToolCallId(null);
+                                            }}
+                                        />
+                                    )}
 
                                 {/* ApprovalPrompt — rendered AFTER the
                                     inline message body so it visually
@@ -884,6 +980,20 @@ function ChatStream({
                                 {showAdvising && (
                                     <div className="my-3">
                                         <ShimmerBlock label="building verdict…" />
+                                    </div>
+                                )}
+
+                                {/* Monte Carlo pending shimmer — run_what_if
+                                    spins up a Vercel Sandbox, pip-installs
+                                    numpy + matplotlib, and runs 10k trials.
+                                    Cold-start can take 30-60s; without this
+                                    the only signal is a tiny spinner in the
+                                    tool pill, which reads as "frozen". The
+                                    label calls out Sandbox explicitly so Ale
+                                    can see the primitive firing in real time. */}
+                                {showMonteCarloPending && (
+                                    <div className="my-3">
+                                        <ShimmerBlock label="running Monte Carlo simulation…" />
                                     </div>
                                 )}
                             </MessageContent>
