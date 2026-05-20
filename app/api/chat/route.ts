@@ -18,13 +18,9 @@ import { VerdictSchema } from "@/lib/schemas/verdict";
 // (We'll leave the runtime as Node.js default for now.
 // Edge runtime would also work for streaming, but Workflow SDK will require node.)
 //
-// Note: previously this file exported `dynamic = "force-dynamic"` to
-// disable response caching. Under Next.js 16's `cacheComponents: true`,
-// the legacy `dynamic` route segment config is incompatible and rejected
-// at build time. API route handlers that stream live data (no
-// `'use cache'` directive) are treated as dynamic by default under
-// cacheComponents — no opt-in flag needed. The streamText() + workflow
-// runtime here means there's nothing cache-eligible anyway.
+// This handler streams live model output and tool results, so we do not
+// try to cache it. No special segment config is needed — route handlers
+// that produce per-request SSE are naturally request-time work.
 
 // Allow up to 60s for the full research loop + advisor step.
 // (Default Next.js function timeout on Hobby/Pro is 10s - we need more because

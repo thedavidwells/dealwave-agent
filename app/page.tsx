@@ -219,8 +219,8 @@ export default function Home() {
                 <div className="flex items-center" style={{ gap: 8 }}>
                     {/* My Deals link — server-rendered index of every
                         saved deal. Demonstrates the second rendering
-                        primitive in the project: Partial Prerendering.
-                        Static shell + Suspense-streamed deal cards. */}
+                        primitive in the project: dynamic streaming SSR
+                        plus a Suspense-streamed deal-card list. */}
                     <a
                         href="/deals"
                         target="_blank"

@@ -53,15 +53,11 @@ export default function RootLayout({
         >
             <body className="min-h-full flex flex-col">
                 {/* Suspense boundary at the layout root.
-                    Under Next.js 16's `cacheComponents: true`, Client
-                    Components that touch random sources during SSR
-                    (e.g. AI SDK's useChat which calls `generateId()`
-                    via Math.random()) need a Suspense boundary above
-                    them — Next prerenders the fallback and resolves
-                    the random value at runtime. Verified from
-                    nextjs.org/docs/messages/next-prerender-random-client.
-                    Null fallback because there's nothing visually we
-                    want to show during the very brief client hydrate. */}
+                    This keeps the app tolerant of any child subtree that
+                    suspends during navigation or hydration without forcing
+                    us to show a heavyweight global loading shell. Null
+                    fallback because there's nothing visually useful to
+                    render during the brief handoff. */}
                 <Suspense fallback={null}>
                     <TooltipProvider>{children}</TooltipProvider>
                 </Suspense>

@@ -85,7 +85,7 @@ The chat route composes a single `createUIMessageStream` that merges the researc
 | Zod schemas | Structured-output validation for the advisor step — `VerdictSchema` uses `.nullable()` (not `.optional()`) for OpenAI strict-mode compatibility so the same schema works across providers | `lib/schemas/verdict.ts` |
 | AI Elements | Pre-built components consuming `useChat`'s typed parts — Conversation, Message, Tool, PromptInput, Shimmer, Suggestion | `components/ai-elements/` |
 | Next.js ISR | Deal detail page rebuilt in the background at most every 60s, with the comps section streamed via Suspense for freshness | `app/deals/[id]/page.tsx` |
-| Next.js PPR | Saved-deals index — static shell prerendered at build time, deal cards stream in via Suspense from per-request DealWave fetches. Enabled globally via `cacheComponents: true` in `next.config.ts`. | `app/deals/page.tsx` |
+| Dynamic streaming SSR + Suspense | Saved-deals index — page chrome renders immediately server-side, deal cards stream in via Suspense around an async Server Component reading from DealWave. | `app/deals/page.tsx` |
 | Eval (CI-gate pattern) | Regression test set that runs the same research + advisor pipeline used in production, asserting on tool selection, recommendation, dealScore bounds, narrative markers, and negative cases. Exit code 0 on pass, 1 on fail — wire to GitHub Actions to gate PRs. | `evals/run.ts`, `evals/test-cases.json` |
 
 ## Running locally
@@ -136,7 +136,7 @@ Exit code is `0` on full pass, `1` on any failure. Wire to GitHub Actions to gat
 - **No client-side Zod.** `VerdictCard` mirrors the Verdict type structurally and trusts server validation. Keeps Zod out of the client bundle.
 - **Image optimization via Next.js Image.** The deal page's property hero uses `next/image` against DealWave's Supabase Storage CDN. Vercel's image service serves AVIF/WebP variants per client, sizes responsively, and lazy-loads below the fold. The page itself is ISR'd at 60s; the image transforms cache independently. Two caching layers for one page — the right split. The first deal card on `/deals` is flagged `priority` so it isn't lazy-loaded — that's the LCP element above the fold; lazy-loading the LCP image measurably hurts the metric.
 - **Sandbox over running Python in the agent's process.** `run_what_if` could have been pure TypeScript Monte Carlo math — but the threat model is that the transform expression is model-generated code. Without Sandbox, `eval(expr)` would have full `process` + `require` access, so a prompt-injected transform could exfiltrate env vars or hit external endpoints. Sandbox isolates to a V8/python boundary with no host access. Costs ~2-3s of cold-start latency per call, accepted as the price of a defensible code-execution surface.
-- **PPR for `/deals`, ISR for `/deals/[id]` — two different rendering primitives for two different data-freshness needs.** The saved-deals index is a per-account live list — staleness here means a user saves a deal in chat and doesn't see it on the index page until revalidation, which is a UX bug. PPR's static-shell + Suspense-streamed cards keeps the page chrome instant while the cards are live per request. The detail page is the opposite shape: once a deal is saved, the underlying data shifts slowly, and ISR with a 60s revalidate gives SSG speed on every cache hit while still refreshing as the agent enriches the deal. Both pages also use Suspense for sub-region streaming (PPR uses it for the card list, ISR uses it for the comps section).
+- **Two different rendering strategies for two different data-freshness needs on `/deals` and `/deals/[id]`.** The saved-deals index is a per-account live list — staleness here means a user saves a deal in chat and doesn't see it on the index page until revalidation, which is a UX bug. So `/deals` runs as dynamic streaming SSR: the page chrome renders instantly server-side and the card grid is wrapped in `<Suspense>` around an async Server Component that fetches per request. The detail page is the opposite shape: once a deal is saved, the underlying data shifts slowly, and ISR with a 60s revalidate gives SSG speed on every cache hit while still refreshing as the agent enriches the deal.
 
 ## Known limitations
 
@@ -152,7 +152,7 @@ app/
   api/
     chat/route.ts             Research tool loop + advisor verdict, single SSE stream
     agent/approve/route.ts    Resumes dealReviewWorkflow via reviewHook
-  deals/page.tsx              PPR saved-deals index (static shell + Suspense-streamed cards)
+  deals/page.tsx              Saved-deals index (dynamic streaming SSR + Suspense cards)
   deals/[id]/page.tsx         ISR deal detail (revalidate: 60) + Suspense-streamed comps
   page.tsx                    useChat shell + VerdictCard render + approval buttons
   layout.tsx, globals.css

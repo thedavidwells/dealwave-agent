@@ -1,31 +1,23 @@
 // app/deals/page.tsx
 //
-// /deals — Saved Deals index. Demonstrates Partial Prerendering (PPR):
-//   - The static shell (header chrome, page title, page chrome) is
-//     prerendered at build time and served instantly from the edge cache.
-//   - The deal cards stream in via <Suspense>. The cards are dynamic —
-//     they read live data from DealWave's API per request — but the
-//     user sees the chrome IMMEDIATELY rather than waiting for the API
-//     call to complete.
+// /deals — Saved Deals index. Dynamic streaming SSR with Suspense:
+//   - Page chrome (header, page title, layout) renders server-side
+//     immediately because it has no async dependencies.
+//   - The deal cards (DealsGrid) are an async Server Component wrapped
+//     in <Suspense>, so they stream in once the DealWave fetch resolves.
+//     User sees the chrome instantly, then cards materialize.
 //
-// This is the OTHER rendering primitive in the project. /deals/[id] uses
-// ISR (revalidate: 60) for a cacheable single-record page; /deals uses
-// PPR for a list that's always live. Two different cache strategies
-// chosen deliberately for the data-freshness needs of each surface.
-//
-// Per-page PPR opt-in via `experimental_ppr = true`. Required because
-// next.config.ts has `experimental.ppr = 'incremental'` (opt-in mode).
+// Rendering story for the project:
+//   - /deals/[id] uses ISR (revalidate: 60) for a cacheable detail page.
+//   - /deals uses dynamic streaming SSR + Suspense for a live per-account
+//     list — staleness here would be a UX bug (save in chat, don't see
+//     it on the index), so the list is always fresh per request.
 
 import Image from "next/image";
 import Link from "next/link";
 import { Suspense } from "react";
 
 import { dealWaveFetch } from "@/lib/dealwave-client";
-
-// Next 16 enables PPR globally via `cacheComponents: true` in
-// next.config.ts. No per-route opt-in flag needed — any async work
-// inside a <Suspense> boundary becomes a streamed dynamic hole on top
-// of the prerendered shell.
 
 // ─── Design tokens (match /deals/[id] for visual consistency) ──────────
 
@@ -168,8 +160,8 @@ export default function DealsIndexPage() {
                         Every property the agent has analyzed and you&apos;ve
                         saved. Click any deal to see the full breakdown — comps,
                         Monte Carlo, AI verdict. <span style={{ color: C.dim }}>
-                            Rendered with Partial Prerendering: chrome static, deal
-                            list streamed.
+                            Server-rendered page with a Suspense-streamed deal
+                            list.
                         </span>
                     </p>
                 </div>
