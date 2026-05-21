@@ -53,6 +53,8 @@ const ALLOWED_ADVISOR = [
     "anthropic/claude-opus-4-6",
     "anthropic/claude-haiku-4-5",
     "openai/gpt-4o",
+    "xai/grok-4.20-non-reasoning",
+    "google/gemini-3.1-pro-preview",
 ] as const;
 const ALLOWED_BACKUP = ["none", "bedrock", "vertex"] as const;
 
@@ -142,7 +144,34 @@ export async function POST(request: Request) {
     // Both the research tool loop AND the advisor step need this,
     // so we hoist the conversion out of streamText() for reuse.
     // This helper converts the useChat message format into the format expected by the model.
-    const modelMessages = await convertToModelMessages(messages);
+    const rawModelMessages = await convertToModelMessages(messages);
+
+    // Sanitize: remove dangling tool-use blocks — assistant messages that
+    // contain tool_use parts with no matching tool_result in the next
+    // user message. This can happen when the create_deal approval flow
+    // is interrupted (user navigates away, sends a new message before
+    // approving, etc.) and would otherwise throw AI_MissingToolResultsError
+    // before any model call even starts.
+    const modelMessages = rawModelMessages.filter((msg, i) => {
+        if (msg.role !== "assistant") return true;
+        const parts = Array.isArray(msg.content) ? msg.content : [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const toolUseIds = (parts as any[])
+            .filter((p) => p.type === "tool-use")
+            .map((p) => (p.toolCallId ?? p.id) as string);
+        if (toolUseIds.length === 0) return true;
+
+        // Check the immediately following user message for matching tool-results
+        const next = rawModelMessages[i + 1];
+        if (!next || next.role !== "user") return false;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const resultIds = new Set<string>(
+            (Array.isArray(next.content) ? (next.content as any[]) : [])
+                .filter((p) => p.type === "tool-result")
+                .map((p) => p.toolCallId as string),
+        );
+        return toolUseIds.every((id) => resultIds.has(id));
+    });
 
     // We compose a UI message stream so we can run TWO model calls and
     // merge both into the same client-facing response:

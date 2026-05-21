@@ -45,6 +45,8 @@ export const ADVISOR_OPTIONS = [
     "anthropic/claude-opus-4-6",
     "anthropic/claude-haiku-4-5",
     "openai/gpt-4o",
+    "xai/grok-4.20-non-reasoning",
+    "google/gemini-3.1-pro-preview",
 ] as const;
 
 export const BACKUP_OPTIONS = ["none", "bedrock", "vertex"] as const;

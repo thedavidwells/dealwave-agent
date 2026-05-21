@@ -85,8 +85,8 @@ export function ShimmerBlock({
                     <span
                         className="animate-text-pulse"
                         style={{
-                            width: 5,
-                            height: 5,
+                            width: 6,
+                            height: 6,
                             borderRadius: "50%",
                             backgroundColor: "var(--dw-blue)",
                             display: "inline-block",
@@ -96,7 +96,7 @@ export function ShimmerBlock({
                     <span
                         className="animate-text-pulse font-sans"
                         style={{
-                            fontSize: 12,
+                            fontSize: 15,
                             color: "var(--dw-dim)",
                         }}
                     >

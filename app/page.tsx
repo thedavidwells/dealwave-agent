@@ -81,7 +81,7 @@ export default function Home() {
     // useChat manages the full conversation state and SSE stream lifecycle.
     // setMessages is exposed so the "+ New analysis" header button can reset
     // the conversation in-place without a full page reload.
-    const { messages, sendMessage, setMessages, status, addToolApprovalResponse } =
+    const { messages, sendMessage, setMessages, status, stop, addToolApprovalResponse } =
         useChat({
             // Fire the resume request only when all pending approvals have
             // been answered — this is the create_deal needsApproval gate.
@@ -436,10 +436,7 @@ export default function Home() {
                                 <PromptInputTools />
                                 <PromptInputSubmit
                                     status={status}
-                                    disabled={
-                                        status === "streaming" ||
-                                        status === "submitted"
-                                    }
+                                    onStop={stop}
                                 />
                             </PromptInputFooter>
                         </PromptInput>
